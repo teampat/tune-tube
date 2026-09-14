@@ -180,6 +180,14 @@ function formatSemitone(semitones) {
   return String(semitones);
 }
 
+function warmAudioContext() {
+  try {
+    Tone.start();
+  } catch {
+    // ignore until the dedicated play button
+  }
+}
+
 function setPitch(semitones) {
   currentPitch = Math.max(-12, Math.min(12, Number(semitones) || 0));
   semitoneReadout.textContent = formatSemitone(currentPitch);
@@ -203,7 +211,6 @@ async function ensureAudioGraph() {
   }).toDestination();
   Tone.connect(source, pitchShift);
   audioGraphReady = true;
-  unlockEl.hidden = true;
 }
 
 function targetAudioTime() {
@@ -226,12 +233,29 @@ function syncAudioTime(force = false) {
 
 async function playBoth() {
   await ensureAudioGraph();
+  if (Tone.getContext().state !== "running") {
+    await Tone.getContext().resume();
+  }
+  if (!audioReady) {
+    throw new Error("เสียงยังโหลดไม่เสร็จ รอสักครู่แล้วกดอีกครั้ง");
+  }
+  if (!ytPlayer) {
+    throw new Error("วิดีโอยังไม่พร้อม รอสักครู่แล้วกดอีกครั้ง");
+  }
+
   keepVideoSilent();
   syncAudioTime(true);
-  const playVideo = ytPlayer.playVideo();
-  const playAudio = audioEl.play();
-  await Promise.all([playVideo, playAudio].filter(Boolean).map((p) => Promise.resolve(p).catch(() => {})));
-  keepVideoSilent();
+  try {
+    ytPlayer.playVideo();
+  } catch {
+    // YouTube play can fail if the iframe is still cueing
+  }
+
+  await audioEl.play();
+  if (audioEl.paused) {
+    throw new Error("เบราว์เซอร์ยังบล็อกเสียง ลองกดอีกครั้ง");
+  }
+  unlockEl.hidden = true;
 }
 
 function stopPlayback() {
@@ -399,7 +423,7 @@ async function loadVideo(videoId) {
   clearResults();
   showPoster(videoId);
   stage.hidden = false;
-  unlockEl.hidden = audioGraphReady;
+  unlockEl.hidden = false;
   setStatus("กำลังโหลดวิดีโอและแปลงเสียง...");
   loadBtn.disabled = true;
 
@@ -427,7 +451,7 @@ async function loadVideo(videoId) {
   }
   if (token !== loadToken) return;
   keepVideoSilent();
-  setStatus("พร้อมเล่น — กดเล่นบนวิดีโอแล้วเลื่อนคีย์ได้ทันที");
+  setStatus("กดปุ่มเพื่อเล่น");
 }
 
 form.addEventListener("submit", async (event) => {
@@ -440,6 +464,7 @@ form.addEventListener("submit", async (event) => {
 
   const videoId = parseVideoId(query);
   stopPlayback();
+  warmAudioContext();
   loadBtn.disabled = true;
 
   try {
@@ -467,6 +492,7 @@ resultsEl.addEventListener("click", async (event) => {
   if (!button?.dataset.videoId) return;
 
   stopPlayback();
+  warmAudioContext();
   loadBtn.disabled = true;
   try {
     await loadVideo(button.dataset.videoId);
@@ -477,11 +503,21 @@ resultsEl.addEventListener("click", async (event) => {
   }
 });
 
-unlockBtn.addEventListener("click", async () => {
+let unlocking = false;
+unlockEl.addEventListener("click", async (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  if (unlocking) return;
+  unlocking = true;
+  unlockBtn.disabled = true;
   try {
     await playBoth();
   } catch (error) {
-    setStatus(error.message || "ยังเปิด Web Audio ไม่ได้", true);
+    unlockEl.hidden = false;
+    setStatus(error.message || "ยังเปิดเสียงไม่ได้ ลองกดอีกครั้ง", true);
+  } finally {
+    unlocking = false;
+    unlockBtn.disabled = false;
   }
 });
 

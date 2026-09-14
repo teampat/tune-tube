@@ -150,6 +150,16 @@ button {
   min-height: 48px;
 }
 
+#unlock-btn {
+  min-height: 72px;
+  padding: 18px 40px;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border-radius: 18px;
+  box-shadow: 0 10px 28px rgba(255, 77, 77, 0.35);
+}
+
 .loader button {
   min-height: 44px;
   height: 44px;
@@ -356,17 +366,14 @@ button {
 .unlock {
   position: absolute;
   inset: 0;
+  z-index: 5;
   display: grid;
   place-content: center;
   gap: 10px;
   background: rgba(8, 8, 12, 0.72);
   text-align: center;
   padding: 24px;
-}
-
-.unlock p {
-  margin: 0;
-  color: var(--muted);
+  cursor: pointer;
 }
 
 .sr-only {
