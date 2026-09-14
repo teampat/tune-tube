@@ -10,7 +10,7 @@ services:
     container_name: tunetube
     restart: unless-stopped
     ports:
-      - "${PORT:-3000}:3000"
+      - 3002:3000"
     environment:
       NODE_ENV: production
       PORT: 3002
