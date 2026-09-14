@@ -11,7 +11,7 @@
       href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai+Looped:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/styles.css?v=20260915i" />
+    <link rel="stylesheet" href="/styles.css?v=20260915k" />
   </head>
   <body>
     <div class="noise" aria-hidden="true"></div>
@@ -61,12 +61,9 @@
           <div id="yt-player"></div>
           <img class="player-poster" id="player-poster" alt="" hidden />
           <div class="unlock" id="unlock" hidden>
-            <div class="load-progress" id="load-progress" hidden>
-              <p class="load-progress-pct" id="load-progress-pct">0%</p>
-              <div class="load-progress-track" aria-hidden="true">
-                <span class="load-progress-fill" id="load-progress-fill"></span>
-              </div>
-              <p class="load-progress-label" id="load-progress-label">กำลังดึงเสียง</p>
+            <div class="load-spinner" id="load-spinner" hidden>
+              <span class="load-spinner-ring" aria-hidden="true"></span>
+              <p>กำลังโหลดเสียง</p>
             </div>
             <button type="button" id="unlock-btn">กดเพื่อเล่น</button>
           </div>
@@ -76,6 +73,6 @@
 
     <audio id="shifted-audio" crossorigin="anonymous" preload="auto" playsinline></audio>
     <script src="https://unpkg.com/tone"></script>
-    <script src="/app.js?v=20260915i"></script>
+    <script src="/app.js?v=20260915k"></script>
   </body>
 </html>

@@ -156,19 +156,35 @@ function parseVideoId(raw) {
   return null;
 }
 
-function addCookieArgs(args) {
+function cookiesForYtDlp() {
   try {
     if (
-      COOKIES_FILE &&
-      fs.existsSync(COOKIES_FILE) &&
-      fs.statSync(COOKIES_FILE).isFile() &&
-      fs.statSync(COOKIES_FILE).size > 80
+      !COOKIES_FILE ||
+      !fs.existsSync(COOKIES_FILE) ||
+      !fs.statSync(COOKIES_FILE).isFile() ||
+      fs.statSync(COOKIES_FILE).size <= 80
     ) {
-      args.push("--cookies", COOKIES_FILE);
-      return;
+      return null;
+    }
+    const writable = path.join(CACHE_DIR, ".cookies.txt");
+    try {
+      fs.copyFileSync(COOKIES_FILE, writable);
+      return writable;
+    } catch {
+      const tmp = path.join(os.tmpdir(), "tunetube-cookies.txt");
+      fs.copyFileSync(COOKIES_FILE, tmp);
+      return tmp;
     }
   } catch {
-    // fall through to browser cookies on local machines
+    return null;
+  }
+}
+
+function addCookieArgs(args) {
+  const cookies = cookiesForYtDlp();
+  if (cookies) {
+    args.push("--cookies", cookies);
+    return;
   }
 
   if (!COOKIES_FROM_BROWSER || COOKIES_FROM_BROWSER === "none") return;
@@ -283,6 +299,23 @@ async function searchViaInnertube(query) {
   return mapSearchHits(renderers);
 }
 
+function lastUsefulErrorLine(text) {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^~+/g, "").trim())
+    .filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (/ERROR:|OSError|Errno|Permission denied|Read-only/i.test(lines[i])) {
+      return lines[i].slice(0, 280);
+    }
+  }
+  return (lines[lines.length - 1] || "").slice(0, 280);
+}
+
+function isCookieWriteError(error) {
+  return /Errno 30|Read-only file system|save_cookies/i.test(error?.message || "");
+}
+
 function friendlyYtError(message) {
   const text = String(message || "").trim();
   if (/sign in to confirm|not a bot/i.test(text)) {
@@ -294,9 +327,12 @@ function friendlyYtError(message) {
   if (/could not copy|unable to find|failed to decrypt/i.test(text) && /cookie/i.test(text)) {
     return "อ่าน cookies จาก Chrome ไม่สำเร็จ ลองปิด Chrome แล้วเปิดใหม่ หรือล็อกอิน YouTube ใน Chrome ก่อน";
   }
+  if (/Errno 30|Read-only file system/i.test(text)) {
+    return "เขียน cookies ไม่ได้ กำลังใช้สำเนาในโฟลเดอร์ cache แทน";
+  }
   if (/private video/i.test(text)) return "วิดีโอนี้เป็นส่วนตัว";
   if (/video unavailable/i.test(text)) return "วิดีโอไม่พร้อมใช้งาน";
-  return text.replace(/^ERROR:\s*/i, "") || "ดึงเสียงจาก YouTube ไม่สำเร็จ";
+  return lastUsefulErrorLine(text).replace(/^ERROR:\s*/i, "") || "ดึงเสียงจาก YouTube ไม่สำเร็จ";
 }
 
 function cachedAudioPath(videoId) {
@@ -354,7 +390,13 @@ async function ensureAudioFile(videoId, onProgress) {
       `https://www.youtube.com/watch?v=${videoId}`,
     ]);
 
-    await spawnYtDlp(args, DOWNLOAD_TIMEOUT_MS, (progress) => publishProgress(videoId, progress));
+    try {
+      await spawnYtDlp(args, DOWNLOAD_TIMEOUT_MS, (progress) => publishProgress(videoId, progress));
+    } catch (error) {
+      if (!(fs.existsSync(dest) && fs.statSync(dest).size > 1024 && isCookieWriteError(error))) {
+        throw error;
+      }
+    }
 
     if (!fs.existsSync(dest) || fs.statSync(dest).size < 1024) {
       throw new Error("แปลงไฟล์เสียงไม่สำเร็จ");
