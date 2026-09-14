@@ -1,6 +1,12 @@
 services:
   tunetube:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+        - linux/arm64
+    image: teampat/tunetube
     container_name: tunetube
     restart: unless-stopped
     ports:

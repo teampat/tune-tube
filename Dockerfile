@@ -1,40 +1,27 @@
 # syntax=docker/dockerfile:1
-
-FROM mwader/static-ffmpeg:7.1.1 AS ffmpeg
-
 FROM node:22-alpine
 
-ARG TARGETARCH
-
-COPY --from=ffmpeg /ffmpeg /usr/local/bin/ffmpeg
-COPY --from=ffmpeg /ffprobe /usr/local/bin/ffprobe
-
-ENV NODE_ENV=production \
-    PORT=3000 \
-    YTDLP_COOKIES=/app/cookies.txt \
-    YTDLP_COOKIES_FROM_BROWSER=none \
-    NPM_CONFIG_UPDATE_NOTIFIER=false \
-    NPM_CONFIG_AUDIT=false \
-    NPM_CONFIG_FUND=false
-
-# Standalone musl binary — no Python/curl packages needed
-RUN asset="yt-dlp_musllinux"; \
-    if [ "$TARGETARCH" = "arm64" ]; then asset="yt-dlp_musllinux_aarch64"; fi; \
-    wget -qO /usr/local/bin/yt-dlp \
-      "https://github.com/yt-dlp/yt-dlp/releases/latest/download/${asset}" \
-    && chmod a+rx /usr/local/bin/yt-dlp /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+RUN apk add --no-cache python3 ffmpeg ca-certificates
+ADD --chmod=755 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp /usr/local/bin/yt-dlp
 
 WORKDIR /app
-RUN mkdir -p cache && chown node:node /app cache
 
-COPY --chown=node:node package.json package-lock.json ./
-USER node
-RUN --mount=type=cache,target=/home/node/.npm \
-  npm ci --omit=dev
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev
 
 COPY --chown=node:node public ./public
-COPY --chown=node:node server.js docker-entrypoint.sh ./
-RUN chmod +x docker-entrypoint.sh && touch cookies.txt
+COPY --chown=node:node server.js ./
+COPY --chmod=755 --chown=node:node docker-entrypoint.sh ./
+RUN mkdir -p cache \
+  && touch cookies.txt \
+  && chown -R node:node /app
+
+USER node
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV YTDLP_COOKIES=/app/cookies.txt
+ENV YTDLP_COOKIES_FROM_BROWSER=none
 
 EXPOSE 3000
 

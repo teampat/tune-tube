@@ -35,6 +35,18 @@ docker compose up -d --build
 
 อย่า commit `cookies.txt` ไฟล์นี้ถูกละเว้นใน `.gitignore` แล้ว
 
+หรือดึง image จาก Docker Hub (รองรับ `linux/amd64` และ `linux/arm64`):
+
+```bash
+docker pull teampat/tunetube
+```
+
+Build แล้ว push ทั้งสองสถาปัตยกรรม:
+
+```bash
+docker compose build --push
+```
+
 ## ใช้งาน
 
 1. ค้นหาเพลง หรือวางลิงก์ YouTube
