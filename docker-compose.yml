@@ -1,7 +1,6 @@
 services:
   tunetube:
     build: .
-    image: tunetube:latest
     container_name: tunetube
     restart: unless-stopped
     ports:
