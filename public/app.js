@@ -17,7 +17,6 @@ const pitchUp = document.getElementById("pitch-up");
 const pitchDown = document.getElementById("pitch-down");
 const pitchReset = document.getElementById("pitch-reset");
 const semitoneReadout = document.getElementById("semitone-readout");
-const semitoneLabel = document.getElementById("semitone-label");
 const audioEl = document.getElementById("shifted-audio");
 
 let ytPlayer = null;
@@ -44,17 +43,13 @@ function isShiftMode() {
 }
 
 function showLoading() {
-  unlockEl.hidden = false;
   loadSpinnerEl.hidden = false;
-  unlockBtn.hidden = true;
-  if (!statusEl.classList.contains("error")) {
-    setStatus("กำลังโหลดเสียงเพื่อเปลี่ยนคีย์...");
-  }
+  pitchCard.classList.add("is-loading");
 }
 
 function hideLoading() {
   loadSpinnerEl.hidden = true;
-  unlockBtn.hidden = false;
+  pitchCard.classList.remove("is-loading");
 }
 
 function hideUnlock() {
@@ -224,12 +219,6 @@ function hidePoster() {
   posterEl.hidden = true;
 }
 
-function pitchLabel(semitones) {
-  if (semitones === 0) return "คีย์เดิม";
-  const abs = Math.abs(semitones);
-  return semitones > 0 ? `ขึ้น ${abs} ครึ่งเสียง` : `ลง ${abs} ครึ่งเสียง`;
-}
-
 function formatSemitone(semitones) {
   if (semitones > 0) return `+${semitones}`;
   return String(semitones);
@@ -287,7 +276,6 @@ function restoreYoutubeAudio() {
 
 function renderPitch() {
   semitoneReadout.textContent = formatSemitone(currentPitch);
-  semitoneLabel.textContent = pitchLabel(currentPitch);
   if (pitchShift) pitchShift.pitch = currentPitch;
   pitchCard.classList.toggle("is-flat", currentPitch === 0);
   pitchCard.classList.toggle("is-up", currentPitch > 0);
@@ -303,7 +291,6 @@ function setPitch(semitones) {
 
   if (currentPitch === 0) {
     restoreYoutubeAudio();
-    setStatus("คีย์เดิม");
     return;
   }
 
@@ -432,7 +419,6 @@ async function ensureShiftedPlayback() {
       setStatus(error.message || "กดปุ่มเพื่อเล่นคีย์ใหม่", true);
       return;
     }
-    setStatus(pitchLabel(currentPitch));
   } catch (error) {
     if (token !== loadToken || error.name === "AbortError") return;
     hideUnlock();
@@ -738,7 +724,6 @@ unlockEl.addEventListener("pointerdown", (event) => {
 unlockEl.addEventListener("click", async (event) => {
   event.preventDefault();
   event.stopPropagation();
-  if (loadSpinnerEl.hidden === false) return;
   await startUnlock();
 });
 
