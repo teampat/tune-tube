@@ -10,6 +10,7 @@ const resultsEl = document.getElementById("results");
 const stage = document.getElementById("stage");
 const unlockEl = document.getElementById("unlock");
 const unlockBtn = document.getElementById("unlock-btn");
+const posterEl = document.getElementById("player-poster");
 const pitchUp = document.getElementById("pitch-up");
 const pitchDown = document.getElementById("pitch-down");
 const pitchReset = document.getElementById("pitch-reset");
@@ -159,6 +160,15 @@ function keepVideoSilent() {
   ytPlayer.setVolume(0);
 }
 
+function showPoster(videoId) {
+  posterEl.src = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+  posterEl.hidden = false;
+}
+
+function hidePoster() {
+  posterEl.hidden = true;
+}
+
 function pitchLabel(semitones) {
   if (semitones === 0) return "คีย์เดิม";
   const abs = Math.abs(semitones);
@@ -234,8 +244,24 @@ function stopPlayback() {
   } catch {
     // ignore if the element is not ready
   }
-  if (typeof ytPlayer?.stopVideo === "function") ytPlayer.stopVideo();
-  else ytPlayer?.pauseVideo();
+  resetYtPlayer();
+}
+
+function resetYtPlayer() {
+  if (ytPlayer) {
+    try {
+      ytPlayer.stopVideo?.();
+      ytPlayer.destroy();
+    } catch {
+      // ignore if the iframe is already gone
+    }
+    ytPlayer = null;
+  }
+
+  const old = document.getElementById("yt-player");
+  const host = document.createElement("div");
+  host.id = "yt-player";
+  if (old) old.replaceWith(host);
 }
 
 function isYtPlaying() {
@@ -289,6 +315,7 @@ function createPlayer(videoId) {
         onReady: (event) => {
           keepVideoSilent();
           event.target.mute();
+          hidePoster();
           resolve(event.target);
         },
         onStateChange: onPlayerStateChange,
@@ -344,31 +371,30 @@ async function loadVideo(videoId) {
   audioReady = false;
   audioEl.pause();
   clearResults();
-  setStatus("กำลังดึงและแปลงเสียงให้เบราว์เซอร์เล่นได้...");
-  loadBtn.disabled = true;
+  showPoster(videoId);
   stage.hidden = false;
   unlockEl.hidden = audioGraphReady;
+  setStatus("กำลังโหลดวิดีโอและแปลงเสียง...");
+  loadBtn.disabled = true;
+
+  const youtubeReady = (async () => {
+    await loadYouTubeApi();
+    if (token !== loadToken) return;
+    resetYtPlayer();
+    await createPlayer(videoId);
+    if (token !== loadToken) return;
+    ytPlayer.pauseVideo();
+  })();
 
   await prepareAudio(videoId);
   if (token !== loadToken) return;
-  await loadYouTubeApi();
-  if (token !== loadToken) return;
-
-  if (ytPlayer?.loadVideoById) {
-    ytPlayer.loadVideoById(videoId);
-    keepVideoSilent();
-    ytPlayer.pauseVideo();
-  } else {
-    await createPlayer(videoId);
-    ytPlayer.pauseVideo();
-  }
 
   currentVideoId = videoId;
   audioEl.crossOrigin = "anonymous";
   audioEl.src = `/api/stream?${streamParams(videoId)}`;
   audioEl.load();
   try {
-    await waitForAudioReady();
+    await Promise.all([youtubeReady, waitForAudioReady()]);
   } catch (error) {
     if (token !== loadToken) return;
     throw error;
@@ -414,6 +440,7 @@ resultsEl.addEventListener("click", async (event) => {
   const button = event.target.closest(".result");
   if (!button?.dataset.videoId) return;
 
+  stopPlayback();
   loadBtn.disabled = true;
   try {
     await loadVideo(button.dataset.videoId);

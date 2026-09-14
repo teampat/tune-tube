@@ -4,6 +4,7 @@ const os = require("os");
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
+const axios = require("axios");
 
 const PORT = Number(process.env.PORT) || 3000;
 const VIDEO_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
@@ -90,6 +91,114 @@ function addCookieArgs(args) {
   args.push("--cookies-from-browser", COOKIES_FROM_BROWSER);
 }
 
+function withYtDlpDefaults(args) {
+  const next = ["--js-runtimes", "node", ...args];
+  addCookieArgs(next);
+  return next;
+}
+
+function youtubeCookieHeader() {
+  try {
+    if (!COOKIES_FILE || !fs.existsSync(COOKIES_FILE) || !fs.statSync(COOKIES_FILE).isFile()) {
+      return "";
+    }
+    const parts = [];
+    for (const line of fs.readFileSync(COOKIES_FILE, "utf8").split(/\r?\n/)) {
+      if (!line || line.startsWith("#")) continue;
+      const cols = line.split("\t");
+      if (cols.length < 7) continue;
+      const domain = cols[0].replace(/^#HttpOnly_/i, "");
+      if (!/youtube\.com|google\.com|youtu\.be/i.test(domain)) continue;
+      parts.push(`${cols[5]}=${cols[6]}`);
+    }
+    return parts.join("; ");
+  } catch {
+    return "";
+  }
+}
+
+function collectByKey(node, key, out = []) {
+  if (!node || typeof node !== "object") return out;
+  if (node[key]?.videoId) out.push(node[key]);
+  if (Array.isArray(node)) {
+    for (const item of node) collectByKey(item, key, out);
+  } else {
+    for (const value of Object.values(node)) collectByKey(value, key, out);
+  }
+  return out;
+}
+
+function ytText(value) {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (value.simpleText) return value.simpleText;
+  if (Array.isArray(value.runs)) return value.runs.map((part) => part.text || "").join("");
+  return "";
+}
+
+function parseClock(value) {
+  const parts = ytText(value)
+    .split(":")
+    .map((part) => Number(part));
+  if (!parts.length || parts.some((n) => !Number.isFinite(n))) return null;
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return null;
+}
+
+function mapSearchHits(renderers, limit = 8) {
+  const results = [];
+  const seen = new Set();
+  for (const item of renderers) {
+    const videoId = item?.videoId;
+    if (!VIDEO_ID_RE.test(videoId) || seen.has(videoId)) continue;
+    seen.add(videoId);
+    results.push({
+      videoId,
+      title: ytText(item.title) || videoId,
+      channel: ytText(item.ownerText || item.shortBylineText || item.longBylineText),
+      duration: parseClock(item.lengthText),
+      thumbnail: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`,
+    });
+    if (results.length >= limit) break;
+  }
+  return results;
+}
+
+async function searchViaInnertube(query) {
+  const cookie = youtubeCookieHeader();
+  const { data } = await axios.post(
+    "https://www.youtube.com/youtubei/v1/search?prettyPrint=false",
+    {
+      context: {
+        client: {
+          clientName: "WEB",
+          clientVersion: "2.20260101.00.00",
+          hl: "th",
+          gl: "TH",
+        },
+      },
+      query,
+    },
+    {
+      timeout: 12_000,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Content-Type": "application/json",
+        Origin: "https://www.youtube.com",
+        Referer: "https://www.youtube.com/results?search_query=" + encodeURIComponent(query),
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
+    },
+  );
+
+  const renderers = [];
+  collectByKey(data, "videoRenderer", renderers);
+  collectByKey(data, "compactVideoRenderer", renderers);
+  return mapSearchHits(renderers);
+}
+
 function friendlyYtError(message) {
   const text = String(message || "").trim();
   if (/sign in to confirm|not a bot/i.test(text)) {
@@ -118,7 +227,7 @@ async function ensureAudioFile(videoId) {
   if (existing) return existing;
 
   const job = (async () => {
-    const args = [
+    const args = withYtDlpDefaults([
       "-f",
       "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
       "-x",
@@ -135,9 +244,8 @@ async function ensureAudioFile(videoId) {
       "--no-progress",
       "--force-overwrites",
       "--no-keep-video",
-    ];
-    addCookieArgs(args);
-    args.push(`https://www.youtube.com/watch?v=${videoId}`);
+      `https://www.youtube.com/watch?v=${videoId}`,
+    ]);
 
     await execFileAsync("yt-dlp", args, DOWNLOAD_TIMEOUT_MS);
 
@@ -157,7 +265,9 @@ function sendJsonError(res, error) {
     return;
   }
   const timedOut = /timeout|timed out/i.test(error.message || "");
-  res.status(timedOut ? 504 : 502).json({ error: friendlyYtError(error.message) });
+  res.status(500).json({
+    error: timedOut ? "ค้นหาหรือดึงเสียงใช้เวลานานเกินไป" : friendlyYtError(error.message),
+  });
 }
 
 app.get("/api/health", (_req, res) => {
@@ -202,28 +312,37 @@ app.get("/api/search", async (req, res) => {
   }
 
   try {
-    const searchArgs = [
-      "--flat-playlist",
-      "--skip-download",
-      "--no-warnings",
-      "--ignore-no-formats-error",
-      "--socket-timeout",
-      "15",
-      "-J",
-    ];
-    addCookieArgs(searchArgs);
-    searchArgs.push(`ytsearch6:${query}`);
-    const { stdout } = await execFileAsync("yt-dlp", searchArgs);
-    const data = JSON.parse(stdout);
-    const results = (data.entries || [])
-      .filter((entry) => entry && entry.id)
-      .map((entry) => ({
-        videoId: entry.id,
-        title: entry.title || entry.id,
-        channel: entry.uploader || entry.channel || "",
-        duration: Number.isFinite(entry.duration) ? entry.duration : null,
-        thumbnail: `https://i.ytimg.com/vi/${entry.id}/mqdefault.jpg`,
-      }));
+    let results = [];
+    try {
+      results = await searchViaInnertube(query);
+    } catch (error) {
+      console.error("innertube search failed:", error.message);
+    }
+
+    if (!results.length) {
+      const searchArgs = withYtDlpDefaults([
+        "--flat-playlist",
+        "--skip-download",
+        "--no-warnings",
+        "--ignore-no-formats-error",
+        "--socket-timeout",
+        "15",
+        "-J",
+        `ytsearch6:${query}`,
+      ]);
+      const { stdout } = await execFileAsync("yt-dlp", searchArgs, 20_000);
+      const data = JSON.parse(stdout);
+      results = (data.entries || [])
+        .filter((entry) => entry && entry.id)
+        .map((entry) => ({
+          videoId: entry.id,
+          title: entry.title || entry.id,
+          channel: entry.uploader || entry.channel || "",
+          duration: Number.isFinite(entry.duration) ? entry.duration : null,
+          thumbnail: `https://i.ytimg.com/vi/${entry.id}/mqdefault.jpg`,
+        }));
+    }
+
     res.json({ results });
   } catch (error) {
     sendJsonError(res, error);
