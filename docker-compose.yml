@@ -10,10 +10,10 @@ services:
     container_name: tunetube
     restart: unless-stopped
     ports:
-      - 3002:3000"
+      - "3002:3000"
     environment:
       NODE_ENV: production
-      PORT: 3002
+      PORT: 3000
       YTDLP_COOKIES: /app/cookies/cookies.txt
       YTDLP_COOKIES_FROM_BROWSER: none
     volumes:
