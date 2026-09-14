@@ -151,13 +151,14 @@ button {
 }
 
 #unlock-btn {
-  min-height: 72px;
-  padding: 18px 40px;
-  font-size: 28px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  border-radius: 18px;
-  box-shadow: 0 10px 28px rgba(255, 77, 77, 0.35);
+  min-height: 140px;
+  min-width: min(88vw, 560px);
+  padding: 36px 88px;
+  font-size: 52px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  border-radius: 32px;
+  box-shadow: 0 18px 44px rgba(255, 77, 77, 0.42);
 }
 
 .loader button {
@@ -363,6 +364,11 @@ button {
   display: none;
 }
 
+.player-wrap:has(.unlock:not([hidden])) iframe,
+.player-wrap:has(.unlock:not([hidden])) #yt-player {
+  pointer-events: none;
+}
+
 .unlock {
   position: absolute;
   inset: 0;
@@ -374,6 +380,8 @@ button {
   text-align: center;
   padding: 24px;
   cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .sr-only {

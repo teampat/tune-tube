@@ -27,6 +27,10 @@ let syncing = false;
 let lastKnownYtTime = 0;
 let loadToken = 0;
 let currentPitch = 0;
+let wantsPlay = false;
+let playRequestAt = 0;
+let unlocking = false;
+let ytError = null;
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message || "";
@@ -186,6 +190,43 @@ function warmAudioContext() {
   } catch {
     // ignore until the dedicated play button
   }
+  try {
+    Tone.getContext().resume();
+  } catch {
+    // AudioContext may not exist yet
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitUntil(predicate, timeoutMs, message) {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) throw new Error(message);
+    await sleep(80);
+  }
+}
+
+function hasAudioSource() {
+  return Boolean(audioEl.getAttribute("src"));
+}
+
+function kickPlaybackGesture() {
+  wantsPlay = true;
+  playRequestAt = Date.now();
+  warmAudioContext();
+  keepVideoSilent();
+  try {
+    ytPlayer?.playVideo();
+  } catch {
+    // iframe may still be cueing
+  }
+  if (hasAudioSource()) {
+    const playPromise = audioEl.play();
+    if (playPromise) playPromise.catch(() => {});
+  }
 }
 
 function setPitch(semitones) {
@@ -232,35 +273,69 @@ function syncAudioTime(force = false) {
 }
 
 async function playBoth() {
+  const token = loadToken;
+  kickPlaybackGesture();
+  unlockBtn.textContent = "กำลังเปิดเสียง...";
   await ensureAudioGraph();
+  if (loadToken !== token) return;
   if (Tone.getContext().state !== "running") {
     await Tone.getContext().resume();
   }
-  if (!audioReady) {
-    throw new Error("เสียงยังโหลดไม่เสร็จ รอสักครู่แล้วกดอีกครั้ง");
+
+  await waitUntil(
+    () =>
+      loadToken !== token ||
+      ytError ||
+      (hasAudioSource() && (audioReady || audioEl.readyState >= 1)),
+    20_000,
+    "เสียงยังโหลดไม่เสร็จ รอสักครู่แล้วกดอีกครั้ง",
+  );
+  if (loadToken !== token) return;
+  if (ytError) {
+    wantsPlay = false;
+    throw new Error(ytError);
   }
-  if (!ytPlayer) {
-    throw new Error("วิดีโอยังไม่พร้อม รอสักครู่แล้วกดอีกครั้ง");
+
+  await waitUntil(
+    () => loadToken !== token || ytError || ytPlayer,
+    8_000,
+    "วิดีโอยังไม่พร้อม รอสักครู่แล้วกดอีกครั้ง",
+  );
+  if (loadToken !== token) return;
+  if (ytError) {
+    wantsPlay = false;
+    throw new Error(ytError);
   }
 
   keepVideoSilent();
-  syncAudioTime(true);
   try {
     ytPlayer.playVideo();
   } catch {
     // YouTube play can fail if the iframe is still cueing
   }
 
-  await audioEl.play();
+  try {
+    await audioEl.play();
+  } catch {
+    throw new Error("เบราว์เซอร์ยังบล็อกเสียง ลองกดอีกครั้ง");
+  }
+  if (loadToken !== token) return;
   if (audioEl.paused) {
     throw new Error("เบราว์เซอร์ยังบล็อกเสียง ลองกดอีกครั้ง");
   }
+
+  syncAudioTime(true);
   unlockEl.hidden = true;
+  setStatus("");
 }
 
 function stopPlayback() {
   loadToken += 1;
+  wantsPlay = false;
+  unlocking = false;
   audioReady = false;
+  ytError = null;
+  unlockBtn.textContent = "กดเพื่อเล่น";
   audioEl.pause();
   try {
     audioEl.removeAttribute("src");
@@ -335,8 +410,9 @@ function createPlayer(videoId, token) {
         },
         onError: (event) => {
           if (token !== loadToken) return;
-          setStatus(ytErrorMessage(event.data), true);
-          reject(new Error(ytErrorMessage(event.data)));
+          ytError = ytErrorMessage(event.data);
+          setStatus(ytError, true);
+          reject(new Error(ytError));
         },
       },
     });
@@ -349,21 +425,47 @@ function onPlayerStateChange(event) {
   keepVideoSilent();
   const state = event.data;
   if (state === YT.PlayerState.PLAYING) {
-    if (audioEl.paused) {
-      ensureAudioGraph()
-        .then(() => {
-          syncAudioTime(true);
-          return audioEl.play();
-        })
-        .catch(() => {
-          unlockEl.hidden = false;
-        });
+    if (wantsPlay && audioEl.paused) {
+      audioEl.play().catch(() => {
+        unlockEl.hidden = false;
+      });
     }
-  } else if (state === YT.PlayerState.PAUSED || state === YT.PlayerState.ENDED) {
+    return;
+  }
+
+  if (state === YT.PlayerState.BUFFERING || state === YT.PlayerState.CUED) {
+    if (wantsPlay) {
+      try {
+        ytPlayer?.playVideo();
+      } catch {
+        // keep waiting for the iframe
+      }
+    }
+    return;
+  }
+
+  if (state === YT.PlayerState.ENDED) {
+    wantsPlay = false;
     audioEl.pause();
-    if (state === YT.PlayerState.ENDED) audioEl.currentTime = 0;
-  } else if (state === YT.PlayerState.BUFFERING) {
+    audioEl.currentTime = 0;
+    unlockEl.hidden = false;
+    unlockBtn.textContent = "กดเพื่อเล่น";
+    return;
+  }
+
+  if (state === YT.PlayerState.PAUSED) {
+    if (wantsPlay && Date.now() - playRequestAt < 2500) {
+      try {
+        ytPlayer.playVideo();
+      } catch {
+        // ignore if the player is still swapping videos
+      }
+      return;
+    }
+    wantsPlay = false;
     audioEl.pause();
+    unlockEl.hidden = false;
+    unlockBtn.textContent = "กดเพื่อเล่น";
   }
 }
 
@@ -391,14 +493,17 @@ async function prepareAudio(videoId) {
 
 function waitForAudioReady() {
   return new Promise((resolve, reject) => {
+    const succeed = () => {
+      cleanup();
+      audioReady = true;
+      resolve();
+    };
     const timer = setTimeout(() => {
       cleanup();
       reject(new Error("หมดเวลารอสตรีมเสียง จากเซิร์ฟเวอร์"));
     }, 60_000);
     const onReady = () => {
-      cleanup();
-      audioReady = true;
-      resolve();
+      if (audioEl.readyState >= 1) succeed();
     };
     const onError = () => {
       cleanup();
@@ -406,13 +511,25 @@ function waitForAudioReady() {
     };
     const cleanup = () => {
       clearTimeout(timer);
+      clearInterval(poll);
       audioEl.removeEventListener("canplay", onReady);
       audioEl.removeEventListener("loadeddata", onReady);
+      audioEl.removeEventListener("canplaythrough", onReady);
       audioEl.removeEventListener("error", onError);
     };
-    audioEl.addEventListener("canplay", onReady, { once: true });
-    audioEl.addEventListener("loadeddata", onReady, { once: true });
+    const poll = setInterval(() => {
+      if (ytError) {
+        cleanup();
+        reject(new Error(ytError));
+        return;
+      }
+      onReady();
+    }, 100);
+    audioEl.addEventListener("canplay", onReady);
+    audioEl.addEventListener("loadeddata", onReady);
+    audioEl.addEventListener("canplaythrough", onReady);
     audioEl.addEventListener("error", onError, { once: true });
+    onReady();
   });
 }
 
@@ -450,7 +567,12 @@ async function loadVideo(videoId) {
     throw error;
   }
   if (token !== loadToken) return;
+  if (ytError) throw new Error(ytError);
   keepVideoSilent();
+  if (wantsPlay) {
+    if (!unlocking) await startUnlock();
+    if (unlockEl.hidden) return;
+  }
   setStatus("กดปุ่มเพื่อเล่น");
 }
 
@@ -503,22 +625,30 @@ resultsEl.addEventListener("click", async (event) => {
   }
 });
 
-let unlocking = false;
-unlockEl.addEventListener("click", async (event) => {
-  event.preventDefault();
-  event.stopPropagation();
+async function startUnlock() {
   if (unlocking) return;
   unlocking = true;
-  unlockBtn.disabled = true;
   try {
     await playBoth();
   } catch (error) {
+    wantsPlay = false;
     unlockEl.hidden = false;
     setStatus(error.message || "ยังเปิดเสียงไม่ได้ ลองกดอีกครั้ง", true);
   } finally {
     unlocking = false;
-    unlockBtn.disabled = false;
+    unlockBtn.textContent = "กดเพื่อเล่น";
   }
+}
+
+unlockEl.addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "mouse" && event.button !== 0) return;
+  kickPlaybackGesture();
+});
+
+unlockEl.addEventListener("click", async (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  await startUnlock();
 });
 
 pitchUp.addEventListener("click", () => setPitch(currentPitch + 1));
@@ -526,21 +656,33 @@ pitchDown.addEventListener("click", () => setPitch(currentPitch - 1));
 pitchReset.addEventListener("click", () => setPitch(0));
 
 setInterval(() => {
-  if (!ytPlayer || !audioReady || syncing) return;
+  if (!wantsPlay) return;
+  keepVideoSilent();
+
+  if (ytPlayer && !isYtPlaying()) {
+    const state = ytPlayer.getPlayerState?.();
+    if (state !== window.YT?.PlayerState?.BUFFERING && state !== window.YT?.PlayerState?.ENDED) {
+      try {
+        ytPlayer.playVideo();
+      } catch {
+        // keep trying until the iframe is ready
+      }
+    }
+  }
+
+  if (hasAudioSource() && audioEl.paused && unlockEl.hidden) {
+    audioEl.play().catch(() => {
+      unlockEl.hidden = false;
+    });
+  }
+
+  if (!ytPlayer || syncing) return;
   const ytTime = ytPlayer.getCurrentTime?.();
   if (typeof ytTime !== "number") return;
 
   const jumped = Math.abs(ytTime - lastKnownYtTime) > 1;
   lastKnownYtTime = ytTime;
-
-  if (isYtPlaying()) {
-    if (audioEl.paused) audioEl.play().catch(() => {});
-    syncAudioTime(jumped);
-    keepVideoSilent();
-  } else {
-    if (!audioEl.paused) audioEl.pause();
-    if (jumped) syncAudioTime(true);
-  }
+  if (isYtPlaying() && !audioEl.paused) syncAudioTime(jumped);
 }, 250);
 
 document.addEventListener("visibilitychange", () => {
