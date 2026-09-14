@@ -11,7 +11,7 @@
       href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai+Looped:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/styles.css?v=20260915k" />
+    <link rel="stylesheet" href="/styles.css?v=20260915n" />
   </head>
   <body>
     <div class="noise" aria-hidden="true"></div>
@@ -41,14 +41,15 @@
           <button type="submit" id="load-btn">ค้นหา</button>
         </form>
 
-        <aside class="desk">
-          <div class="pitch-card">
-            <p class="desk-label">Pitch</p>
+        <aside class="desk" aria-label="ปรับคีย์">
+          <div class="pitch-card is-flat">
             <button type="button" class="pitch-btn" id="pitch-down" aria-label="ลดคีย์ 1 ครึ่งเสียง">−</button>
-            <p class="semitone" id="semitone-readout">0</p>
+            <div class="pitch-readout" aria-live="polite">
+              <p class="semitone" id="semitone-readout">0</p>
+              <p class="semitone-sub" id="semitone-label">คีย์เดิม</p>
+            </div>
             <button type="button" class="pitch-btn" id="pitch-up" aria-label="ขึ้นคีย์ 1 ครึ่งเสียง">+</button>
-            <p class="semitone-sub" id="semitone-label">คีย์เดิม</p>
-            <button type="button" class="ghost" id="pitch-reset">รีเซ็ต</button>
+            <button type="button" class="pitch-reset" id="pitch-reset" disabled>รีเซ็ต</button>
           </div>
         </aside>
       </div>
@@ -73,6 +74,6 @@
 
     <audio id="shifted-audio" crossorigin="anonymous" preload="auto" playsinline></audio>
     <script src="https://unpkg.com/tone"></script>
-    <script src="/app.js?v=20260915m"></script>
+    <script src="/app.js?v=20260915n"></script>
   </body>
 </html>

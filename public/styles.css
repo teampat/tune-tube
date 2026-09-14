@@ -135,7 +135,7 @@ button {
 
 .loader button,
 .pitch-btn,
-.ghost,
+.pitch-reset,
 #unlock-btn {
   border: 0;
   border-radius: 14px;
@@ -254,20 +254,14 @@ button {
 
 .desk {
   display: none;
-  flex-wrap: nowrap;
   align-items: center;
-  gap: 8px 10px;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  padding: 4px 10px;
+  min-width: 0;
 }
 
 .app:has(#stage:not([hidden])) .desk {
   display: flex;
-  flex: 1 1 0;
-  min-width: 0;
-  max-width: none;
+  flex: 1 1 280px;
+  max-width: 420px;
 }
 
 .app:has(#stage:not([hidden])) .loader {
@@ -279,58 +273,90 @@ button {
 .pitch-card {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex: 1 1 auto;
+  gap: 4px;
+  width: 100%;
   min-width: 0;
-  background: none;
-  border: 0;
-  border-radius: 0;
-  padding: 0;
+  padding: 4px;
+  background: #12141c;
+  border: 1px solid var(--line);
+  border-radius: 999px;
 }
 
-.desk-label {
-  margin: 0;
-  color: var(--muted);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  font-size: 11px;
+.pitch-btn {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  font-size: 22px;
+  line-height: 1;
+  background: #232733;
+  color: var(--text);
+  border-radius: 50%;
+}
+
+.pitch-btn:active {
+  transform: scale(0.94);
+}
+
+.pitch-readout {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  justify-items: center;
+  gap: 0;
+  padding: 0 4px;
 }
 
 .semitone {
   margin: 0;
-  min-width: 2.4ch;
+  min-width: 3ch;
   font-family: Syne, sans-serif;
-  font-size: 28px;
-  line-height: 1;
+  font-size: 22px;
+  line-height: 1.1;
   letter-spacing: -0.04em;
   text-align: center;
 }
 
 .semitone-sub {
   margin: 0;
-  color: var(--ok);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.pitch-card.is-flat .semitone {
+  color: var(--text);
+}
+
+.pitch-card.is-up .semitone,
+.pitch-card.is-up .semitone-sub {
+  color: var(--accent-2);
+}
+
+.pitch-card.is-down .semitone,
+.pitch-card.is-down .semitone-sub {
+  color: #7dd3fc;
+}
+
+.pitch-reset {
+  flex: 0 0 auto;
+  height: 42px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
   font-size: 13px;
   white-space: nowrap;
 }
 
-.pitch-btn {
-  width: 44px;
-  height: 44px;
-  flex: 0 0 44px;
-  font-size: 22px;
-  background: #232733;
-  color: var(--text);
-  border-radius: 12px;
+.pitch-reset:disabled {
+  opacity: 0.38;
+  cursor: default;
 }
 
-.ghost {
-  background: transparent;
+.pitch-card:not(.is-flat) .pitch-reset {
+  background: rgba(255, 255, 255, 0.07);
   color: var(--text);
-  border: 1px solid var(--line) !important;
-  min-height: 44px;
-  height: 44px;
-  padding: 0 14px;
-  font-size: 14px;
 }
 
 .player-wrap {
@@ -499,16 +525,11 @@ button {
   }
 
   .app:has(#stage:not([hidden])) .desk {
-    flex: 1 1 0;
-    max-width: none;
+    flex: 1 1 260px;
+    max-width: 380px;
     min-width: 0;
     margin: 0;
-    padding: 4px 8px;
-  }
-
-  .app:has(#stage:not([hidden])) .desk-label,
-  .app:has(#stage:not([hidden])) .semitone-sub {
-    display: none;
+    padding: 0;
   }
 
   .app:has(#stage:not([hidden])) .status {
@@ -561,17 +582,15 @@ button {
   }
 
   .app:has(#stage:not([hidden])) .pitch-card {
-    flex: 1 1 auto;
-    min-width: 0;
-    gap: 6px;
+    gap: 4px;
   }
 
   .app:has(#stage:not([hidden])) .semitone {
-    font-size: 22px;
+    font-size: 20px;
   }
 
-  .app:has(#stage:not([hidden])) .ghost {
-    padding: 0 10px;
+  .app:has(#stage:not([hidden])) .pitch-reset {
+    padding: 0 12px;
   }
 }
 
@@ -613,14 +632,6 @@ button {
   .results {
     grid-template-columns: 1fr;
   }
-
-  .pitch-card {
-    flex-wrap: wrap;
-  }
-
-  .semitone-sub {
-    width: 100%;
-  }
 }
 
 @media (orientation: landscape) and (max-height: 900px) {
@@ -630,8 +641,9 @@ button {
 }
 
 @media (orientation: portrait) and (max-width: 900px) {
-  .app:has(#stage:not([hidden])) #pitch-reset {
-    display: none;
+  .app:has(#stage:not([hidden])) .pitch-reset {
+    padding: 0 10px;
+    font-size: 12px;
   }
 }
 

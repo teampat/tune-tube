@@ -12,6 +12,7 @@ const unlockEl = document.getElementById("unlock");
 const unlockBtn = document.getElementById("unlock-btn");
 const loadSpinnerEl = document.getElementById("load-spinner");
 const posterEl = document.getElementById("player-poster");
+const pitchCard = document.querySelector(".pitch-card");
 const pitchUp = document.getElementById("pitch-up");
 const pitchDown = document.getElementById("pitch-down");
 const pitchReset = document.getElementById("pitch-reset");
@@ -284,11 +285,19 @@ function restoreYoutubeAudio() {
   hideUnlock();
 }
 
-function setPitch(semitones) {
-  currentPitch = Math.max(-12, Math.min(12, Number(semitones) || 0));
+function renderPitch() {
   semitoneReadout.textContent = formatSemitone(currentPitch);
   semitoneLabel.textContent = pitchLabel(currentPitch);
   if (pitchShift) pitchShift.pitch = currentPitch;
+  pitchCard.classList.toggle("is-flat", currentPitch === 0);
+  pitchCard.classList.toggle("is-up", currentPitch > 0);
+  pitchCard.classList.toggle("is-down", currentPitch < 0);
+  pitchReset.disabled = currentPitch === 0;
+}
+
+function setPitch(semitones) {
+  currentPitch = Math.max(-12, Math.min(12, Number(semitones) || 0));
+  renderPitch();
 
   if (!currentVideoId) return;
 
@@ -624,9 +633,7 @@ async function loadVideo(videoId) {
   shiftLoading = false;
   abortPrepare();
   currentPitch = 0;
-  semitoneReadout.textContent = formatSemitone(0);
-  semitoneLabel.textContent = pitchLabel(0);
-  if (pitchShift) pitchShift.pitch = 0;
+  renderPitch();
   audioEl.pause();
   try {
     audioEl.removeAttribute("src");
