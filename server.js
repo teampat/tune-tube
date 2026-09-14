@@ -24,15 +24,24 @@ const inFlight = new Map();
 
 function execFileAsync(cmd, args, timeout = SEARCH_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) {
-        const wrapped = new Error(stderr?.trim() || error.message);
-        wrapped.code = error.code;
-        reject(wrapped);
-        return;
-      }
-      resolve({ stdout, stderr });
-    });
+    execFile(
+      cmd,
+      args,
+      {
+        timeout,
+        maxBuffer: 8 * 1024 * 1024,
+        env: { ...process.env, LANG: "C.UTF-8", PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          const wrapped = new Error(stderr?.trim() || error.message);
+          wrapped.code = error.code;
+          reject(wrapped);
+          return;
+        }
+        resolve({ stdout, stderr });
+      },
+    );
   });
 }
 
@@ -151,6 +160,20 @@ function sendJsonError(res, error) {
   res.status(timedOut ? 504 : 502).json({ error: friendlyYtError(error.message) });
 }
 
+app.get("/api/health", (_req, res) => {
+  let cookies = false;
+  try {
+    cookies =
+      Boolean(COOKIES_FILE) &&
+      fs.existsSync(COOKIES_FILE) &&
+      fs.statSync(COOKIES_FILE).isFile() &&
+      fs.statSync(COOKIES_FILE).size > 80;
+  } catch {
+    cookies = false;
+  }
+  res.json({ ok: true, cookies });
+});
+
 app.get("/api/search", async (req, res) => {
   const query = String(req.query.q || "")
     .replace(/[\n\r]/g, " ")
@@ -184,10 +207,12 @@ app.get("/api/search", async (req, res) => {
       "--skip-download",
       "--no-warnings",
       "--ignore-no-formats-error",
+      "--socket-timeout",
+      "15",
       "-J",
     ];
     addCookieArgs(searchArgs);
-    searchArgs.push(`ytsearch8:${query}`);
+    searchArgs.push(`ytsearch6:${query}`);
     const { stdout } = await execFileAsync("yt-dlp", searchArgs);
     const data = JSON.parse(stdout);
     const results = (data.entries || [])

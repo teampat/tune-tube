@@ -82,12 +82,26 @@ function renderResults(results) {
   resultsEl.hidden = false;
 }
 
+async function readApiError(response, fallback) {
+  const text = await response.text();
+  try {
+    const data = JSON.parse(text);
+    if (data.error) return data.error;
+  } catch {
+    // HTML/text from a proxy (Cloudflare 502, nginx, etc.)
+  }
+  if (response.status === 502 || response.status === 504) {
+    return "เซิร์ฟเวอร์ไม่ตอบ API — ให้ proxy ทั้งเว็บไปที่ container และตั้ง timeout อย่างน้อย 120 วินาที";
+  }
+  return fallback;
+}
+
 async function searchVideos(query) {
   const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
-  const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data.error || "ค้นหาไม่สำเร็จ");
+    throw new Error(await readApiError(response, "ค้นหาไม่สำเร็จ"));
   }
+  const data = await response.json().catch(() => ({}));
   return data.results || [];
 }
 
@@ -293,9 +307,8 @@ function streamParams(videoId) {
 
 async function prepareAudio(videoId) {
   const response = await fetch(`/api/prepare?${streamParams(videoId)}`);
-  const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data.error || "เตรียมสตรีมเสียงไม่สำเร็จ");
+    throw new Error(await readApiError(response, "เตรียมสตรีมเสียงไม่สำเร็จ"));
   }
 }
 

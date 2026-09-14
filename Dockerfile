@@ -19,6 +19,9 @@ RUN mkdir -p cache cookies \
 USER node
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV LANG=C.UTF-8
+ENV PYTHONUTF8=1
+ENV PYTHONIOENCODING=utf-8
 ENV YTDLP_COOKIES=/app/cookies/cookies.txt
 ENV YTDLP_COOKIES_FROM_BROWSER=none
 

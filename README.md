@@ -49,6 +49,19 @@ Build แล้ว push ทั้งสองสถาปัตยกรรม:
 docker compose build --push
 ```
 
+Reverse proxy (nginx / Caddy / Cloudflare) ต้องส่ง **ทั้งหน้าเว็บและ `/api`** ไปที่ container และอย่าตั้ง timeout สั้นเกินไป — ค้นหา/แปลงเสียงใช้เวลาหลายสิบวินาที
+
+```nginx
+location / {
+  proxy_pass http://127.0.0.1:3002;
+  proxy_http_version 1.1;
+  proxy_read_timeout 180s;
+  proxy_send_timeout 180s;
+}
+```
+
+ตรวจว่า API ถึงแอปแล้วด้วย `https://โดเมน/api/health` ควรได้ `{"ok":true,...}`
+
 ## ใช้งาน
 
 1. ค้นหาเพลง หรือวางลิงก์ YouTube
@@ -60,6 +73,7 @@ docker compose build --push
 
 | เส้นทาง | คำอธิบาย |
 |---|---|
+| `GET /api/health` | ตรวจว่าแอปตอบ และมีไฟล์คุกกี้หรือไม่ |
 | `GET /api/search?q=` | ค้นหาคลิปบน YouTube |
 | `GET /api/prepare?videoId=` | ดาวน์โหลดและแปลงเสียงเป็น `.m4a` แล้วเก็บใน `cache/` |
 | `GET /api/stream?videoId=` | สตรีมไฟล์เสียงที่แปลงแล้ว (รองรับ Range) |
