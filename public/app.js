@@ -6,7 +6,6 @@ const DRIFT_SECONDS = IS_IOS ? 0.85 : 0.4;
 const PITCH_LATENCY = IS_IOS ? 0.16 : 0.1;
 const PITCH_WINDOW = IS_IOS ? 0.18 : 0.12;
 const SYNC_MS = IS_IOS ? 600 : 320;
-const SHIFT_OUTPUT_GAIN = 0.2;
 
 const form = document.getElementById("load-form");
 const videoInput = document.getElementById("video-input");
@@ -336,9 +335,7 @@ async function ensureAudioGraph() {
       windowSize: PITCH_WINDOW,
       delayTime: 0,
       feedback: 0,
-    });
-    const shiftGain = new Tone.Gain(SHIFT_OUTPUT_GAIN).toDestination();
-    pitchShift.connect(shiftGain);
+    }).toDestination();
     Tone.connect(source, pitchShift);
     audioGraphReady = true;
   } catch (error) {
