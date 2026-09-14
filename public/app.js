@@ -1,6 +1,12 @@
 const VIDEO_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
-const DRIFT_SECONDS = 0.28;
-const PITCH_LATENCY = 0.08;
+const IS_IOS =
+  /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const DRIFT_SECONDS = IS_IOS ? 0.85 : 0.4;
+const PITCH_LATENCY = IS_IOS ? 0.16 : 0.1;
+const PITCH_WINDOW = IS_IOS ? 0.18 : 0.12;
+const SYNC_MS = IS_IOS ? 600 : 320;
+const SHIFT_OUTPUT_GAIN = 0.2;
 
 const form = document.getElementById("load-form");
 const videoInput = document.getElementById("video-input");
@@ -231,7 +237,9 @@ function warmAudioContext() {
     // ignore until playback
   }
   try {
-    Tone.getContext().resume();
+    const ctx = Tone.getContext();
+    ctx.resume();
+    if (IS_IOS) ctx.lookAhead = 0.2;
   } catch {
     // AudioContext may not exist yet
   }
@@ -319,15 +327,18 @@ async function ensureAudioGraph() {
   if (ctx.state !== "running") {
     throw new Error("เบราว์เซอร์ยังบล็อกเสียง ลองกดอีกครั้ง");
   }
+  if (IS_IOS) ctx.lookAhead = 0.2;
 
   try {
     const source = ctx.rawContext.createMediaElementSource(audioEl);
     pitchShift = new Tone.PitchShift({
       pitch: currentPitch,
-      windowSize: 0.08,
+      windowSize: PITCH_WINDOW,
       delayTime: 0,
       feedback: 0,
-    }).toDestination();
+    });
+    const shiftGain = new Tone.Gain(SHIFT_OUTPUT_GAIN).toDestination();
+    pitchShift.connect(shiftGain);
     Tone.connect(source, pitchShift);
     audioGraphReady = true;
   } catch (error) {
@@ -347,14 +358,20 @@ function targetAudioTime() {
 function syncAudioTime(force = false) {
   if (!audioReady || !ytPlayer) return;
   const target = targetAudioTime();
-  if (force || Math.abs(audioEl.currentTime - target) > DRIFT_SECONDS) {
-    syncing = true;
+  const drift = Math.abs(audioEl.currentTime - target);
+  if (!force && drift <= DRIFT_SECONDS) return;
+  if (IS_IOS && !force && !audioEl.paused && drift < 1.25) return;
+
+  syncing = true;
+  try {
     audioEl.currentTime = target;
-    lastKnownYtTime = ytPlayer.getCurrentTime();
-    queueMicrotask(() => {
-      syncing = false;
-    });
+  } catch {
+    // iOS can reject seeks during buffering
   }
+  lastKnownYtTime = ytPlayer.getCurrentTime();
+  window.setTimeout(() => {
+    syncing = false;
+  }, IS_IOS ? 180 : 0);
 }
 
 async function playShiftedAudio() {
@@ -375,7 +392,8 @@ async function playShiftedAudio() {
   if (loadToken !== token || currentPitch === 0) return;
 
   attachAudio(currentVideoId);
-  syncAudioTime(true);
+  const alreadyPlaying = !audioEl.paused;
+  syncAudioTime(!alreadyPlaying);
 
   try {
     await withTimeout(audioEl.play(), 4000, "เบราว์เซอร์ยังบล็อกเสียง ลองกดอีกครั้ง");
@@ -395,6 +413,14 @@ async function playShiftedAudio() {
 
 async function ensureShiftedPlayback() {
   if (!currentVideoId || currentPitch === 0 || shiftLoading) return;
+
+  if (audioReady && hasAudioSource() && pitchShift && !audioEl.paused) {
+    pitchShift.pitch = currentPitch;
+    keepVideoSilent();
+    hideLoading();
+    return;
+  }
+
   const token = loadToken;
   shiftLoading = true;
   showLoading();
@@ -751,10 +777,10 @@ setInterval(() => {
   const ytTime = ytPlayer.getCurrentTime?.();
   if (typeof ytTime !== "number") return;
 
-  const jumped = Math.abs(ytTime - lastKnownYtTime) > 1;
+  const jumped = Math.abs(ytTime - lastKnownYtTime) > 1.2;
   lastKnownYtTime = ytTime;
   if (isYtPlaying() && !audioEl.paused) syncAudioTime(jumped);
-}, 250);
+}, SYNC_MS);
 
 document.addEventListener("visibilitychange", () => {
   if (document.hidden && isShiftMode() && isYtPlaying()) {
