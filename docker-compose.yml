@@ -19,7 +19,7 @@ services:
     volumes:
       # Put Netscape cookies at ./cookies/cookies.txt (must be a file).
       #   mkdir -p cookies
-      #   yt-dlp --cookies-from-browser chrome --cookies cookies/cookies.txt --skip-download "https://www.youtube.com"
+      #   yt-dlp --cookies-from-browser chrome --cookies cookies/cookies.txt --skip-download --simulate --no-playlist "https://www.youtube.com/watch?v=jNQXAC9IVRw"
       - ./cookies:/app/cookies:ro
       - audio-cache:/app/cache
 

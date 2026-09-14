@@ -31,7 +31,7 @@ npm start
 ```bash
 rm -rf cookies.txt
 mkdir -p cookies
-yt-dlp --cookies-from-browser chrome --cookies cookies/cookies.txt --skip-download "https://www.youtube.com"
+yt-dlp --cookies-from-browser chrome --cookies cookies/cookies.txt --skip-download --simulate --no-playlist "https://www.youtube.com/watch?v=jNQXAC9IVRw"
 docker compose up -d
 ```
 

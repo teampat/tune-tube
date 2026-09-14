@@ -14,7 +14,8 @@ cache/
 !.env.example
 cookies.txt
 cookies.txt.bak
-cookies/
+cookies/*
+!cookies/.gitkeep
 
 # Logs and debug
 *.log
