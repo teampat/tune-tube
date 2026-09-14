@@ -4,6 +4,8 @@ FROM mwader/static-ffmpeg:7.1.1 AS ffmpeg
 
 FROM node:22-alpine
 
+ARG TARGETARCH
+
 COPY --from=ffmpeg /ffmpeg /usr/local/bin/ffmpeg
 COPY --from=ffmpeg /ffprobe /usr/local/bin/ffprobe
 
@@ -15,10 +17,12 @@ ENV NODE_ENV=production \
     NPM_CONFIG_AUDIT=false \
     NPM_CONFIG_FUND=false
 
-RUN apk add --no-cache python3 ca-certificates curl
-RUN curl -fsSL -o /usr/local/bin/yt-dlp \
-    https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
-  && chmod a+rx /usr/local/bin/yt-dlp /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+# Standalone musl binary — no Python/curl packages needed
+RUN asset="yt-dlp_musllinux"; \
+    if [ "$TARGETARCH" = "arm64" ]; then asset="yt-dlp_musllinux_aarch64"; fi; \
+    wget -qO /usr/local/bin/yt-dlp \
+      "https://github.com/yt-dlp/yt-dlp/releases/latest/download/${asset}" \
+    && chmod a+rx /usr/local/bin/yt-dlp /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
 
 WORKDIR /app
 RUN mkdir -p cache && chown node:node /app cache
