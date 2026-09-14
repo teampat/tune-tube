@@ -5,3 +5,5 @@ cache
 *.log
 .DS_Store
 cookies.txt
+*.md
+.cursor
