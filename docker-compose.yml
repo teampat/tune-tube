@@ -13,14 +13,14 @@ services:
       - "${PORT:-3000}:3000"
     environment:
       NODE_ENV: production
-      PORT: 3002
-      YTDLP_COOKIES: /app/cookies.txt
+      PORT: 3000
+      YTDLP_COOKIES: /app/cookies/cookies.txt
       YTDLP_COOKIES_FROM_BROWSER: none
     volumes:
-      # Netscape cookies.txt exported from a logged-in YouTube session.
-      # Create the file first or Docker will mount a directory instead:
-      #   yt-dlp --cookies-from-browser chrome --cookies cookies.txt --skip-download "https://www.youtube.com"
-      - ./cookies.txt:/app/cookies.txt:ro
+      # Put Netscape cookies at ./cookies/cookies.txt (must be a file).
+      #   mkdir -p cookies
+      #   yt-dlp --cookies-from-browser chrome --cookies cookies/cookies.txt --skip-download "https://www.youtube.com"
+      - ./cookies:/app/cookies:ro
       - audio-cache:/app/cache
 
 volumes:

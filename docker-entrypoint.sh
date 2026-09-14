@@ -1,13 +1,15 @@
 #!/bin/sh
 set -e
 
-if [ -d "${YTDLP_COOKIES:-/app/cookies.txt}" ]; then
-  echo "cookies.txt is a directory. Create a file named cookies.txt on the host before compose up."
+COOKIES="${YTDLP_COOKIES:-/app/cookies/cookies.txt}"
+
+if [ -d "$COOKIES" ]; then
+  echo "cookies.txt is a directory. Put a Netscape cookies file at ./cookies/cookies.txt on the host."
   exit 1
 fi
 
-if [ ! -s "${YTDLP_COOKIES:-/app/cookies.txt}" ]; then
-  echo "Warning: cookies.txt is missing or empty. YouTube may block audio downloads."
+if [ ! -s "$COOKIES" ]; then
+  echo "Warning: $COOKIES is missing or empty. YouTube may block audio downloads."
 fi
 
 exec node server.js

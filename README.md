@@ -26,14 +26,16 @@ npm start
 
 ## Docker
 
-สร้างไฟล์ `cookies.txt` ข้าง `docker-compose.yml` ก่อน (ต้องเป็นไฟล์ ไม่ใช่โฟลเดอร์)
+ถ้าเคย `compose up` แล้ว Docker สร้าง `cookies.txt` เป็นโฟลเดอร์ ให้ลบทิ้งก่อน:
 
 ```bash
-yt-dlp --cookies-from-browser chrome --cookies cookies.txt --skip-download "https://www.youtube.com"
-docker compose up -d --build
+rm -rf cookies.txt
+mkdir -p cookies
+yt-dlp --cookies-from-browser chrome --cookies cookies/cookies.txt --skip-download "https://www.youtube.com"
+docker compose up -d
 ```
 
-อย่า commit `cookies.txt` ไฟล์นี้ถูกละเว้นใน `.gitignore` แล้ว
+อย่า commit คุกกี้ — โฟลเดอร์ `cookies/` ถูกละเว้นใน `.gitignore` แล้ว
 
 หรือดึง image จาก Docker Hub (รองรับ `linux/amd64` และ `linux/arm64`):
 

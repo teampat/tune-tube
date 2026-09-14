@@ -13,14 +13,13 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY --chown=node:node public ./public
 COPY --chown=node:node server.js ./
 COPY --chmod=755 --chown=node:node docker-entrypoint.sh ./
-RUN mkdir -p cache \
-  && touch cookies.txt \
+RUN mkdir -p cache cookies \
   && chown -R node:node /app
 
 USER node
 ENV NODE_ENV=production
 ENV PORT=3000
-ENV YTDLP_COOKIES=/app/cookies.txt
+ENV YTDLP_COOKIES=/app/cookies/cookies.txt
 ENV YTDLP_COOKIES_FROM_BROWSER=none
 
 EXPOSE 3000

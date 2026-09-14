@@ -5,6 +5,7 @@ cache
 *.log
 .DS_Store
 cookies.txt
+cookies
 README.md
 PROJECT_SPEC.md
 
