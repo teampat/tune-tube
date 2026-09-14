@@ -1,15 +1,34 @@
+FROM mwader/static-ffmpeg:7.1.1 AS ffmpeg
+
 FROM node:22-bookworm-slim
 
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
+COPY --from=ffmpeg /ffmpeg /usr/local/bin/ffmpeg
+COPY --from=ffmpeg /ffprobe /usr/local/bin/ffprobe
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Debian HTTP (port 80) often times out on VPS/CDN. Use HTTPS and retry.
+RUN set -eux; \
+  find /etc/apt -type f \( -name "*.list" -o -name "*.sources" \) -exec \
+    sed -i \
+      -e "s|http://deb.debian.org|https://deb.debian.org|g" \
+      -e "s|http://security.debian.org|https://deb.debian.org|g" \
+      {} +; \
+  printf '%s\n' \
+    'Acquire::Retries "5";' \
+    'Acquire::https::Timeout "20";' \
+    'Acquire::http::Timeout "20";' \
+    'Acquire::ForceIPv4 "true";' \
+    > /etc/apt/apt.conf.d/99-retries; \
+  apt-get update; \
+  apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
-    ffmpeg \
-    python3 \
-  && curl -fsSL -o /usr/local/bin/yt-dlp \
-    https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
-  && chmod a+rx /usr/local/bin/yt-dlp \
-  && rm -rf /var/lib/apt/lists/*
+    python3; \
+  curl -fsSL -o /usr/local/bin/yt-dlp \
+    https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp; \
+  chmod a+rx /usr/local/bin/yt-dlp /usr/local/bin/ffmpeg /usr/local/bin/ffprobe; \
+  rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
