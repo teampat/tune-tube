@@ -10,8 +10,8 @@
   --ok: #c6f54e;
   --shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
   --radius: 22px;
-  --chrome-inner: 26px;
-  --chrome-pad: 1px;
+  --chrome-inner: 30px;
+  --chrome-pad: 2px;
 }
 
 * {
@@ -171,7 +171,7 @@ button {
   min-height: var(--chrome-inner);
   height: var(--chrome-inner);
   padding: 0 12px;
-  font-size: 12px;
+  font-size: 13px;
   border-radius: 999px;
   background: #ff0000;
 }
@@ -361,14 +361,20 @@ body:has(#stage:not([hidden])) {
 }
 
 .pitch-btn {
-  width: var(--chrome-inner);
+  width: auto;
+  min-width: 52px;
   height: var(--chrome-inner);
-  flex: 0 0 var(--chrome-inner);
+  flex: 0 0 auto;
+  padding: 0 14px;
   font-size: 16px;
   line-height: 1;
-  background: #232733;
-  color: var(--text);
-  border-radius: 50%;
+  background: #c8cdd6;
+  color: #12141c;
+  border-radius: 999px;
+}
+
+.pitch-btn:hover {
+  filter: brightness(0.92);
 }
 
 .pitch-btn:active {
