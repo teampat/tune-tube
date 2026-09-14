@@ -250,7 +250,6 @@ function stopPlayback() {
 function resetYtPlayer() {
   if (ytPlayer) {
     try {
-      ytPlayer.stopVideo?.();
       ytPlayer.destroy();
     } catch {
       // ignore if the iframe is already gone
@@ -258,14 +257,68 @@ function resetYtPlayer() {
     ytPlayer = null;
   }
 
-  const old = document.getElementById("yt-player");
+  const wrap = document.querySelector(".player-wrap");
+  wrap.querySelectorAll("iframe").forEach((node) => node.remove());
+  document.getElementById("yt-player")?.remove();
+
   const host = document.createElement("div");
   host.id = "yt-player";
-  if (old) old.replaceWith(host);
+  wrap.prepend(host);
 }
 
-function isYtPlaying() {
-  return ytPlayer?.getPlayerState?.() === window.YT.PlayerState.PLAYING;
+function createPlayer(videoId, token) {
+  return new Promise((resolve, reject) => {
+    if (!document.getElementById("yt-player")) {
+      reject(new Error("ไม่พบช่องวิดีโอ"));
+      return;
+    }
+
+    const player = new YT.Player("yt-player", {
+      videoId,
+      width: "100%",
+      height: "100%",
+      playerVars: {
+        autoplay: 0,
+        rel: 0,
+        modestbranding: 1,
+        playsinline: 1,
+        fs: 1,
+        origin: window.location.origin,
+        widget_referrer: window.location.href,
+        enablejsapi: 1,
+      },
+      events: {
+        onReady: (event) => {
+          if (token !== loadToken) {
+            try {
+              event.target.destroy();
+            } catch {
+              // stale player after a newer song was chosen
+            }
+            resolve(null);
+            return;
+          }
+          ytPlayer = event.target;
+          keepVideoSilent();
+          event.target.mute();
+          event.target.cueVideoById(videoId);
+          hidePoster();
+          resolve(event.target);
+        },
+        onStateChange: (event) => {
+          if (token !== loadToken) return;
+          onPlayerStateChange(event);
+        },
+        onError: (event) => {
+          if (token !== loadToken) return;
+          setStatus(ytErrorMessage(event.data), true);
+          reject(new Error(ytErrorMessage(event.data)));
+        },
+      },
+    });
+
+    if (!player) reject(new Error("สร้าง YouTube player ไม่สำเร็จ"));
+  });
 }
 
 function onPlayerStateChange(event) {
@@ -297,35 +350,8 @@ function ytErrorMessage(code) {
   return "เล่นวิดีโอ YouTube ไม่สำเร็จ";
 }
 
-function createPlayer(videoId) {
-  return new Promise((resolve, reject) => {
-    ytPlayer = new YT.Player("yt-player", {
-      videoId,
-      width: "100%",
-      height: "100%",
-      playerVars: {
-        rel: 0,
-        modestbranding: 1,
-        playsinline: 1,
-        fs: 1,
-        origin: window.location.origin,
-        enablejsapi: 1,
-      },
-      events: {
-        onReady: (event) => {
-          keepVideoSilent();
-          event.target.mute();
-          hidePoster();
-          resolve(event.target);
-        },
-        onStateChange: onPlayerStateChange,
-        onError: (event) => {
-          setStatus(ytErrorMessage(event.data), true);
-          reject(new Error(ytErrorMessage(event.data)));
-        },
-      },
-    });
-  });
+function isYtPlaying() {
+  return ytPlayer?.getPlayerState?.() === window.YT.PlayerState.PLAYING;
 }
 
 function streamParams(videoId) {
@@ -381,9 +407,9 @@ async function loadVideo(videoId) {
     await loadYouTubeApi();
     if (token !== loadToken) return;
     resetYtPlayer();
-    await createPlayer(videoId);
+    await createPlayer(videoId, token);
     if (token !== loadToken) return;
-    ytPlayer.pauseVideo();
+    ytPlayer?.pauseVideo();
   })();
 
   await prepareAudio(videoId);

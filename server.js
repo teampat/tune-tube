@@ -19,7 +19,17 @@ fs.mkdirSync(CACHE_DIR, { recursive: true });
 const app = express();
 app.disable("x-powered-by");
 app.use(cors({ origin: "*" }));
-app.use(express.static(path.join(__dirname, "public")));
+app.use(
+  express.static(path.join(__dirname, "public"), {
+    etag: false,
+    lastModified: false,
+    setHeaders(res, filePath) {
+      if (/\.(html|js|css)$/.test(filePath)) {
+        res.setHeader("Cache-Control", "no-store");
+      }
+    },
+  }),
+);
 
 const inFlight = new Map();
 
