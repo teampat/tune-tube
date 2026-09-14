@@ -1,0 +1,22 @@
+services:
+  tunetube:
+    build: .
+    image: tunetube:latest
+    container_name: tunetube
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3002
+      YTDLP_COOKIES: /app/cookies.txt
+      YTDLP_COOKIES_FROM_BROWSER: none
+    volumes:
+      # Netscape cookies.txt exported from a logged-in YouTube session.
+      # Create the file first or Docker will mount a directory instead:
+      #   yt-dlp --cookies-from-browser chrome --cookies cookies.txt --skip-download "https://www.youtube.com"
+      - ./cookies.txt:/app/cookies.txt:ro
+      - audio-cache:/app/cache
+
+volumes:
+  audio-cache:

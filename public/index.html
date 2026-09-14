@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b0c10" />
+    <title>TuneTube</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai+Looped:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="noise" aria-hidden="true"></div>
+    <div class="app">
+      <div class="chrome">
+        <header class="topbar">
+          <div class="brand">
+            <span class="brand-mark">♪</span>
+            <div>
+              <p class="brand-kicker">Live key shift</p>
+              <h1>TuneTube</h1>
+            </div>
+          </div>
+        </header>
+
+        <form class="loader" id="load-form" autocomplete="off" role="search">
+          <label class="sr-only" for="video-input">ค้นหาบน YouTube</label>
+          <input
+            id="video-input"
+            name="q"
+            type="search"
+            inputmode="search"
+            enterkeyhint="search"
+            placeholder="ค้นหาเพลง ศิลปิน หรือคลิปบน YouTube"
+            required
+          />
+          <button type="submit" id="load-btn">ค้นหา</button>
+        </form>
+
+        <aside class="desk">
+          <div class="pitch-card">
+            <p class="desk-label">Pitch</p>
+            <button type="button" class="pitch-btn" id="pitch-down" aria-label="ลดคีย์ 1 ครึ่งเสียง">−</button>
+            <p class="semitone" id="semitone-readout">0</p>
+            <button type="button" class="pitch-btn" id="pitch-up" aria-label="ขึ้นคีย์ 1 ครึ่งเสียง">+</button>
+            <p class="semitone-sub" id="semitone-label">คีย์เดิม</p>
+            <button type="button" class="ghost" id="pitch-reset">รีเซ็ต</button>
+          </div>
+        </aside>
+      </div>
+
+      <p class="status" id="status" role="status"></p>
+      <section class="results" id="results" hidden></section>
+
+      <section class="stage" id="stage" hidden>
+        <div class="player-wrap">
+          <div id="yt-player"></div>
+          <div class="unlock" id="unlock" hidden>
+            <button type="button" id="unlock-btn">แตะเพื่อเริ่มเล่นเสียง</button>
+            <p>เบราว์เซอร์ต้องได้คลิกก่อนจึงจะเปิด Web Audio ได้</p>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <audio id="shifted-audio" crossorigin="anonymous" preload="auto" playsinline></audio>
+    <script src="https://unpkg.com/tone"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>
