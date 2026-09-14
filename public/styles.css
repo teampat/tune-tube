@@ -264,9 +264,9 @@ button {
 
 .app:has(#stage:not([hidden])) .desk {
   display: flex;
-  flex: 0 0 25%;
-  width: 25%;
-  max-width: 25%;
+  flex: 0 0 28%;
+  width: 28%;
+  max-width: 28%;
   min-width: 0;
 }
 
@@ -350,7 +350,7 @@ body:has(#stage:not([hidden])) {
 .pitch-card {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
   width: 100%;
   min-width: 0;
   height: calc(var(--chrome-inner) + var(--chrome-pad) * 2 + 2px);
@@ -362,11 +362,11 @@ body:has(#stage:not([hidden])) {
 
 .pitch-btn {
   width: auto;
-  min-width: 52px;
+  min-width: 36px;
   height: var(--chrome-inner);
   flex: 0 0 auto;
-  padding: 0 14px;
-  font-size: 16px;
+  padding: 0 8px;
+  font-size: 20px;
   line-height: 1;
   background: #c8cdd6;
   color: #12141c;
@@ -389,19 +389,21 @@ body:has(#stage:not([hidden])) {
   place-items: center;
   padding: 0 2px;
   min-height: var(--chrome-inner);
+  overflow: hidden;
 }
 
 .pitch-value {
   display: flex;
   align-items: baseline;
   justify-content: center;
-  gap: 4px;
+  gap: 3px;
   margin: 0;
+  min-width: 0;
 }
 
 .pitch-label {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: lowercase;
@@ -432,7 +434,7 @@ body:has(#stage:not([hidden])) {
   margin: 0;
   min-width: 2.2ch;
   font-family: Syne, sans-serif;
-  font-size: 14px;
+  font-size: 18px;
   line-height: 1;
   letter-spacing: -0.04em;
   text-align: center;
@@ -453,11 +455,11 @@ body:has(#stage:not([hidden])) {
 .pitch-reset {
   flex: 0 0 auto;
   height: var(--chrome-inner);
-  padding: 0 10px;
+  padding: 0 6px;
   border-radius: 999px;
   background: transparent;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 13px;
   white-space: nowrap;
 }
 
@@ -581,9 +583,9 @@ body:has(#stage:not([hidden])) {
   }
 
   .app:has(#stage:not([hidden])) .desk {
-    flex: 0 0 25%;
-    width: 25%;
-    max-width: 25%;
+    flex: 0 0 28%;
+    width: 28%;
+    max-width: 28%;
     min-width: 0;
     margin: 0;
     padding: 0;
@@ -639,7 +641,7 @@ body:has(#stage:not([hidden])) {
 @media (orientation: portrait) and (max-width: 900px) {
   .app:has(#stage:not([hidden])) .pitch-reset {
     padding: 0 8px;
-    font-size: 11px;
+    font-size: 13px;
   }
 }
 
