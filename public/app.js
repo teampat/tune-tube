@@ -1,6 +1,7 @@
 const VIDEO_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
 const DRIFT_SECONDS = 0.28;
 const PITCH_LATENCY = 0.08;
+const SHIFT_OUTPUT_GAIN = 0.5;
 
 const form = document.getElementById("load-form");
 const videoInput = document.getElementById("video-input");
@@ -327,7 +328,9 @@ async function ensureAudioGraph() {
       windowSize: 0.08,
       delayTime: 0,
       feedback: 0,
-    }).toDestination();
+    });
+    const shiftGain = new Tone.Gain(SHIFT_OUTPUT_GAIN).toDestination();
+    pitchShift.connect(shiftGain);
     Tone.connect(source, pitchShift);
     audioGraphReady = true;
   } catch (error) {
