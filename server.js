@@ -1,4 +1,4 @@
-const { execFile } = require("child_process");
+const { execFile, spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -32,6 +32,80 @@ app.use(
 );
 
 const inFlight = new Map();
+
+function parseYtProgress(line) {
+  const percentMatch = line.match(/\[download\]\s+([\d.]+)\s*%/);
+  if (percentMatch) {
+    const eta = line.match(/\bETA\s+(\S+)/);
+    const speed = line.match(/\bat\s+(\S+)/);
+    const etaValue = eta?.[1] && !/unknown/i.test(eta[1]) ? eta[1] : null;
+    const speedValue = speed?.[1] && !/unknown/i.test(speed[1]) ? speed[1] : null;
+    return {
+      phase: "download",
+      percent: Math.max(0, Math.min(100, Number(percentMatch[1]))),
+      eta: etaValue,
+      speed: speedValue,
+    };
+  }
+  if (/\[ExtractAudio\]|\[Merger\]|\[Fixup|Destination:.*\.m4a/i.test(line)) {
+    return { phase: "convert", percent: 100 };
+  }
+  return null;
+}
+
+function publishProgress(videoId, data) {
+  const job = inFlight.get(videoId);
+  if (!job) return;
+  job.progress = data;
+  for (const listener of job.listeners) {
+    try {
+      listener(data);
+    } catch {
+      // ignore a disconnected SSE client
+    }
+  }
+}
+
+function spawnYtDlp(args, timeout, onProgress) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("yt-dlp", args, {
+      env: { ...process.env, LANG: "C.UTF-8", PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
+    });
+    let log = "";
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(new Error("timed out"));
+    }, timeout);
+    const handle = (buf) => {
+      const text = String(buf);
+      log += text;
+      if (log.length > 16_384) log = log.slice(-12_288);
+      for (const line of text.split(/\r|\n/)) {
+        const parsed = parseYtProgress(line.trim());
+        if (parsed) onProgress(parsed);
+      }
+    };
+    child.stdout.on("data", handle);
+    child.stderr.on("data", handle);
+    child.on("error", (error) => finish(error));
+    child.on("close", (code) => {
+      if (code === 0) finish();
+      else finish(new Error(log.trim() || `yt-dlp exited ${code}`));
+    });
+  });
+}
+
+function writeSse(res, data) {
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
 
 function execFileAsync(cmd, args, timeout = SEARCH_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
@@ -229,14 +303,37 @@ function cachedAudioPath(videoId) {
   return path.join(CACHE_DIR, `${videoId}.m4a`);
 }
 
-async function ensureAudioFile(videoId) {
+async function ensureAudioFile(videoId, onProgress) {
   const dest = cachedAudioPath(videoId);
-  if (fs.existsSync(dest) && fs.statSync(dest).size > 1024) return dest;
+  if (fs.existsSync(dest) && fs.statSync(dest).size > 1024) {
+    onProgress?.({ phase: "done", percent: 100 });
+    return dest;
+  }
 
   const existing = inFlight.get(videoId);
-  if (existing) return existing;
+  if (existing) {
+    if (onProgress) {
+      existing.listeners.add(onProgress);
+      if (existing.progress) onProgress(existing.progress);
+    }
+    try {
+      return await existing.promise;
+    } finally {
+      if (onProgress) existing.listeners.delete(onProgress);
+    }
+  }
 
-  const job = (async () => {
+  const listeners = new Set();
+  if (onProgress) listeners.add(onProgress);
+  const job = {
+    listeners,
+    progress: { phase: "download", percent: 0 },
+    promise: null,
+  };
+  inFlight.set(videoId, job);
+
+  job.promise = (async () => {
+    publishProgress(videoId, { phase: "download", percent: 0 });
     const args = withYtDlpDefaults([
       "-f",
       "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
@@ -251,22 +348,22 @@ async function ensureAudioFile(videoId) {
       path.join(CACHE_DIR, `${videoId}.%(ext)s`),
       "--no-playlist",
       "--no-warnings",
-      "--no-progress",
+      "--newline",
       "--force-overwrites",
       "--no-keep-video",
       `https://www.youtube.com/watch?v=${videoId}`,
     ]);
 
-    await execFileAsync("yt-dlp", args, DOWNLOAD_TIMEOUT_MS);
+    await spawnYtDlp(args, DOWNLOAD_TIMEOUT_MS, (progress) => publishProgress(videoId, progress));
 
     if (!fs.existsSync(dest) || fs.statSync(dest).size < 1024) {
       throw new Error("แปลงไฟล์เสียงไม่สำเร็จ");
     }
+    publishProgress(videoId, { phase: "done", percent: 100 });
     return dest;
   })().finally(() => inFlight.delete(videoId));
 
-  inFlight.set(videoId, job);
-  return job;
+  return job.promise;
 }
 
 function sendJsonError(res, error) {
@@ -366,11 +463,53 @@ app.get("/api/prepare", async (req, res) => {
     return;
   }
 
+  const wantsSse = /text\/event-stream/i.test(req.headers.accept || "");
+  if (!wantsSse) {
+    try {
+      await ensureAudioFile(videoId);
+      res.json({ ok: true, videoId });
+    } catch (error) {
+      sendJsonError(res, error);
+    }
+    return;
+  }
+
+  res.status(200);
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  if (typeof res.flushHeaders === "function") res.flushHeaders();
+  req.socket.setTimeout(DOWNLOAD_TIMEOUT_MS + 15_000);
+
+  let closed = false;
+  req.on("close", () => {
+    closed = true;
+  });
+
+  const heartbeat = setInterval(() => {
+    if (!closed) res.write(": ping\n\n");
+  }, 10_000);
+
   try {
-    await ensureAudioFile(videoId);
-    res.json({ ok: true, videoId });
+    await ensureAudioFile(videoId, (progress) => {
+      if (!closed) writeSse(res, progress);
+    });
+    if (!closed) {
+      writeSse(res, { phase: "done", percent: 100 });
+      res.end();
+    }
   } catch (error) {
-    sendJsonError(res, error);
+    if (!closed) {
+      writeSse(res, {
+        error: /timeout|timed out/i.test(error.message || "")
+          ? "ค้นหาหรือดึงเสียงใช้เวลานานเกินไป"
+          : friendlyYtError(error.message),
+      });
+      res.end();
+    }
+  } finally {
+    clearInterval(heartbeat);
   }
 });
 
