@@ -715,7 +715,7 @@ async function mapPool(items, limit, worker) {
 }
 
 async function ensurePitchBand(videoId, onProgress) {
-  const source = await ensurePcmWav(videoId, onProgress);
+  const source = await ensureAudioFile(videoId, onProgress);
   const pitches = prefetchPitchList();
   let done = 0;
   await mapPool(pitches, PITCH_RENDER_CONCURRENCY, async (semitones) => {
