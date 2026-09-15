@@ -138,33 +138,17 @@ button {
 
 .loader button,
 .pitch-btn,
-.pitch-reset,
-#unlock-btn {
+.pitch-reset {
   border: 0;
   border-radius: 14px;
   font-weight: 600;
 }
 
-.loader button,
-#unlock-btn {
+.loader button {
   background: var(--accent);
   color: white;
   padding: 12px 22px;
   min-height: 48px;
-}
-
-#unlock-btn {
-  min-height: 56px;
-  padding: 14px 28px;
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  border-radius: 16px;
-  box-shadow: 0 10px 24px rgba(255, 77, 77, 0.32);
-}
-
-#unlock-btn[hidden] {
-  display: none !important;
 }
 
 .loader button {
@@ -177,8 +161,7 @@ button {
   background: #ff0000;
 }
 
-.loader button:hover,
-#unlock-btn:hover {
+.loader button:hover {
   filter: brightness(1.08);
 }
 
@@ -252,8 +235,7 @@ button {
   margin-top: 18px;
 }
 
-.stage[hidden],
-.unlock[hidden] {
+.stage[hidden] {
   display: none !important;
 }
 
@@ -510,27 +492,6 @@ body:has(#stage:not([hidden])) {
 
 .player-poster[hidden] {
   display: none;
-}
-
-.player-wrap:has(.unlock:not([hidden])) iframe,
-.player-wrap:has(.unlock:not([hidden])) #yt-player {
-  pointer-events: none;
-}
-
-.unlock {
-  position: absolute;
-  inset: 0;
-  z-index: 5;
-  display: grid;
-  place-content: center;
-  justify-items: center;
-  gap: 18px;
-  background: rgba(8, 8, 12, 0.72);
-  text-align: center;
-  padding: 24px;
-  cursor: pointer;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
 }
 
 @keyframes load-spin {

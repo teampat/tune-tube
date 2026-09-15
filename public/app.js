@@ -19,8 +19,6 @@ const loadBtn = document.getElementById("load-btn");
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
 const stage = document.getElementById("stage");
-const unlockEl = document.getElementById("unlock");
-const unlockBtn = document.getElementById("unlock-btn");
 const loadSpinnerEl = document.getElementById("load-spinner");
 const posterEl = document.getElementById("player-poster");
 const pitchCard = document.getElementById("pitch-card");
@@ -37,7 +35,6 @@ let lastKnownYtTime = 0;
 let lastYtWall = 0;
 let loadToken = 0;
 let currentPitch = 0;
-let unlocking = false;
 let ytError = null;
 let prepareAbort = null;
 let shiftLoading = false;
@@ -80,12 +77,6 @@ function showLoading() {
 function hideLoading() {
   loadSpinnerEl.hidden = true;
   pitchCard.classList.remove("is-loading");
-}
-
-function hideUnlock() {
-  unlockEl.hidden = true;
-  unlockBtn.textContent = "กดเพื่อเล่น";
-  hideLoading();
 }
 
 function abortPrepare() {
@@ -258,17 +249,6 @@ function formatSemitone(semitones) {
   return String(semitones);
 }
 
-function withTimeout(promise, ms, message) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), ms);
-  });
-  return Promise.race([
-    Promise.resolve(promise).finally(() => clearTimeout(timer)),
-    timeout,
-  ]);
-}
-
 function currentYtTime() {
   const t = ytPlayer?.getCurrentTime?.();
   return Number.isFinite(t) ? t : 0;
@@ -305,8 +285,8 @@ function getAudioCtx() {
   audioCtx.onstatechange = () => {
     if (currentPitch === 0 || shiftLoading) return;
     if (audioCtx.state !== "running") {
-      unlockEl.hidden = false;
-      unlockBtn.hidden = false;
+      audioCtx.resume().catch(() => {});
+      kickHtmlAudio();
     }
   };
   return audioCtx;
@@ -485,7 +465,6 @@ function restoreYoutubeAudio() {
     // ignore if the element is not ready
   }
   unmuteVideo();
-  hideUnlock();
 }
 
 function renderPitch() {
@@ -546,20 +525,7 @@ async function playShiftedAudio() {
   } catch {
     // iframe may still be cueing
   }
-
   if (loadToken !== token || currentPitch === 0) return;
-  if (IS_IOS && !unlocking) {
-    unlockEl.hidden = false;
-    unlockBtn.hidden = false;
-    unlockBtn.textContent = "กดเพื่อเล่น";
-    return;
-  }
-  if (audioCtx?.state === "running") hideUnlock();
-  else {
-    unlockEl.hidden = false;
-    unlockBtn.hidden = false;
-    unlockBtn.textContent = "กดเพื่อเล่น";
-  }
 }
 
 async function ensureShiftedPlayback() {
@@ -594,9 +560,6 @@ async function ensureShiftedPlayback() {
     if (job !== pitchJob || error.name === "AbortError") return;
     stopPreview();
     hideLoading();
-    unlockEl.hidden = false;
-    unlockBtn.hidden = false;
-    unlockBtn.textContent = "กดเพื่อเล่น";
     setStatus(error.message || "โหลดเสียงไม่สำเร็จ", true);
   } finally {
     if (job === pitchJob) {
@@ -609,7 +572,6 @@ async function ensureShiftedPlayback() {
 function stopPlayback() {
   loadToken += 1;
   pitchJob += 1;
-  unlocking = false;
   audioReady = false;
   ytError = null;
   shiftLoading = false;
@@ -619,8 +581,7 @@ function stopPlayback() {
   currentVideoId = null;
   lastKnownYtTime = 0;
   lastYtWall = 0;
-  hideUnlock();
-  unlockBtn.textContent = "กดเพื่อเล่น";
+  hideLoading();
   audioEl.pause();
   try {
     audioEl.removeAttribute("src");
@@ -785,7 +746,7 @@ async function loadVideo(videoId) {
   } catch {
     // ignore
   }
-  hideUnlock();
+  hideLoading();
   clearResults();
   showPoster(videoId);
   stage.hidden = false;
@@ -853,37 +814,6 @@ resultsEl.addEventListener("click", async (event) => {
   }
 });
 
-async function startUnlock() {
-  if (unlocking || currentPitch === 0) return;
-  unlocking = true;
-  unlockBtn.textContent = "กำลังเปิดเสียง...";
-  unlockAudio();
-  try {
-    await withTimeout(playShiftedAudio(), 6000, "ยังเปิดเสียงไม่ได้ ลองกดอีกครั้ง");
-    if (!unlockEl.hidden) unlockBtn.textContent = "กดเพื่อเล่น";
-  } catch (error) {
-    unlockEl.hidden = false;
-    unlockBtn.textContent = "กดเพื่อเล่น";
-    setStatus(error.message || "ยังเปิดเสียงไม่ได้ ลองกดอีกครั้ง", true);
-  } finally {
-    unlocking = false;
-    if (!unlockEl.hidden) unlockBtn.textContent = "กดเพื่อเล่น";
-  }
-}
-
-unlockEl.addEventListener("pointerdown", (event) => {
-  if (event.pointerType === "mouse" && event.button !== 0) return;
-  if (currentPitch === 0) return;
-  unlockAudio();
-  resumePreview();
-});
-
-unlockEl.addEventListener("click", async (event) => {
-  event.preventDefault();
-  event.stopPropagation();
-  await startUnlock();
-});
-
 function onPitchPointerDown(event) {
   if (event.pointerType === "mouse" && event.button !== 0) return;
   unlockAudio();
@@ -899,17 +829,9 @@ setInterval(() => {
   if (!isShiftMode()) return;
   keepVideoSilent();
 
-  if (!IS_IOS && previewConnected && !unlockEl.hidden && loadSpinnerEl.hidden) {
-    hideUnlock();
-  }
-
   if (IS_IOS) {
     getAudioCtx().resume().catch(() => {});
     resumePreview();
-    if (audioCtx?.state !== "running" && !shiftLoading) {
-      unlockEl.hidden = false;
-      unlockBtn.hidden = false;
-    }
   } else if (shiftLoading || isYtPlaying()) {
     getAudioCtx().resume().catch(() => {});
     connectPreview();
