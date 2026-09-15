@@ -139,7 +139,6 @@ button {
 .loader button,
 .pitch-btn,
 .pitch-reset,
-.key-enable,
 #unlock-btn {
   border: 0;
   border-radius: 14px;
@@ -362,54 +361,8 @@ body:has(#stage:not([hidden])) {
   border-radius: 999px;
 }
 
-.pitch-card[hidden],
-.key-enable[hidden] {
+.pitch-card[hidden] {
   display: none !important;
-}
-
-.key-enable {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: 100%;
-  min-width: 0;
-  height: calc(var(--chrome-inner) + var(--chrome-pad) * 2 + 2px);
-  padding: 0 16px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: #12141c;
-  color: var(--text);
-  font-size: 15px;
-  font-weight: 600;
-  white-space: nowrap;
-  position: relative;
-}
-
-.key-enable:hover:not(:disabled) {
-  border-color: rgba(255, 77, 77, 0.45);
-}
-
-.key-enable:disabled {
-  cursor: default;
-  opacity: 0.9;
-}
-
-.key-enable-spinner {
-  position: static;
-  inset: auto;
-  width: 18px;
-  height: 18px;
-  margin: 0;
-  flex: 0 0 auto;
-}
-
-.key-enable.is-loading .key-enable-spinner {
-  display: block !important;
-}
-
-.key-enable.is-loading #key-enable-label {
-  display: none;
 }
 
 .pitch-btn {
@@ -786,11 +739,6 @@ body:has(#stage:not([hidden])) {
     width: 32px;
     height: 32px;
     border-width: 3px;
-  }
-
-  .app:has(#stage:not([hidden])) .key-enable-spinner {
-    width: 20px;
-    height: 20px;
   }
 }
 

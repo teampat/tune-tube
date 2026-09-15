@@ -6,9 +6,6 @@ const DRIFT_SECONDS = IS_IOS ? 0.85 : 0.4;
 const PITCH_LATENCY = 0;
 const SYNC_MS = IS_IOS ? 600 : 320;
 let SHIFT_OUTPUT_GAIN = 0.75;
-let PREFETCH_PITCH = true;
-let PREFETCH_MIN = -3;
-let PREFETCH_MAX = 3;
 let PITCH_LIMIT = 12;
 
 const form = document.getElementById("load-form");
@@ -22,8 +19,6 @@ const unlockBtn = document.getElementById("unlock-btn");
 const loadSpinnerEl = document.getElementById("load-spinner");
 const posterEl = document.getElementById("player-poster");
 const pitchCard = document.getElementById("pitch-card");
-const keyEnable = document.getElementById("key-enable");
-const keySpinner = document.getElementById("key-spinner");
 const pitchUp = document.getElementById("pitch-up");
 const pitchDown = document.getElementById("pitch-down");
 const pitchReset = document.getElementById("pitch-reset");
@@ -40,10 +35,10 @@ let currentPitch = 0;
 let unlocking = false;
 let ytError = null;
 let prepareAbort = null;
-let prefetchAbort = null;
 let shiftLoading = false;
 let pitchJob = 0;
-let pitchControlsReady = false;
+let pitchPreview = false;
+let pitchUpgradeInFlight = false;
 
 async function loadServerConfig() {
   try {
@@ -51,9 +46,6 @@ async function loadServerConfig() {
     if (!response.ok) return;
     const data = await response.json();
     if (Number.isFinite(data.shiftOutputGain)) SHIFT_OUTPUT_GAIN = data.shiftOutputGain;
-    if (typeof data.prefetch === "boolean") PREFETCH_PITCH = data.prefetch;
-    if (Number.isFinite(data.prefetchMin)) PREFETCH_MIN = data.prefetchMin;
-    if (Number.isFinite(data.prefetchMax)) PREFETCH_MAX = data.prefetchMax;
     if (Number.isFinite(data.pitchLimit)) PITCH_LIMIT = data.pitchLimit;
   } catch {
     // keep defaults
@@ -91,64 +83,6 @@ function abortPrepare() {
   if (!prepareAbort) return;
   prepareAbort.abort();
   prepareAbort = null;
-}
-
-function abortPrefetch() {
-  if (!prefetchAbort) return;
-  prefetchAbort.abort();
-  prefetchAbort = null;
-}
-
-function setKeyEnableLoading(loading) {
-  keyEnable.classList.toggle("is-loading", loading);
-  keyEnable.disabled = loading;
-  keyEnable.setAttribute("aria-busy", loading ? "true" : "false");
-  keyEnable.setAttribute("aria-label", loading ? "กำลังโหลดคีย์" : "เปลี่ยนคีย์");
-  keySpinner.hidden = !loading;
-}
-
-function resetKeyUi() {
-  pitchControlsReady = false;
-  pitchCard.hidden = true;
-  setKeyEnableLoading(false);
-  keyEnable.hidden = !currentVideoId;
-}
-
-function showPitchControls() {
-  pitchControlsReady = true;
-  setKeyEnableLoading(false);
-  keyEnable.hidden = true;
-  pitchCard.hidden = false;
-}
-
-async function enablePitchControls() {
-  if (!currentVideoId || pitchControlsReady) return;
-  await configReady;
-  if (!PREFETCH_PITCH) {
-    showPitchControls();
-    return;
-  }
-  const token = loadToken;
-  abortPrefetch();
-  prefetchAbort = new AbortController();
-  setKeyEnableLoading(true);
-  setStatus("");
-
-  try {
-    const response = await fetch(`/api/prefetch?videoId=${encodeURIComponent(currentVideoId)}`, {
-      signal: prefetchAbort.signal,
-    });
-    if (!response.ok) {
-      throw new Error(await readApiError(response, "เตรียมคีย์ไม่สำเร็จ"));
-    }
-    if (token !== loadToken) return;
-    showPitchControls();
-    setStatus("");
-  } catch (error) {
-    if (error.name === "AbortError" || token !== loadToken) return;
-    setKeyEnableLoading(false);
-    setStatus(error.message || "เตรียมคีย์ไม่สำเร็จ", true);
-  }
 }
 
 function formatDuration(seconds) {
@@ -333,6 +267,9 @@ function hasAudioSource() {
 function streamParams(videoId) {
   const params = new URLSearchParams({ videoId });
   if (currentPitch) params.set("pitch", String(currentPitch));
+  const at = ytPlayer?.getCurrentTime?.();
+  if (Number.isFinite(at) && at > 0.5) params.set("at", String(Math.floor(at)));
+  if (currentPitch && !pitchPreview) params.set("full", "1");
   return params;
 }
 
@@ -351,6 +288,7 @@ function restoreYoutubeAudio() {
   pitchJob += 1;
   abortPrepare();
   shiftLoading = false;
+  pitchPreview = false;
   audioReady = false;
   audioEl.pause();
   unmuteVideo();
@@ -366,7 +304,6 @@ function renderPitch() {
 }
 
 function setPitch(semitones) {
-  if (!pitchControlsReady) return;
   currentPitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, Number(semitones) || 0));
   renderPitch();
 
@@ -486,10 +423,9 @@ function stopPlayback() {
   audioReady = false;
   ytError = null;
   shiftLoading = false;
+  pitchPreview = false;
   abortPrepare();
-  abortPrefetch();
   currentVideoId = null;
-  resetKeyUi();
   hideUnlock();
   unlockBtn.textContent = "กดเพื่อเล่น";
   audioEl.pause();
@@ -629,6 +565,8 @@ async function prepareAudio(videoId) {
   if (!response.ok) {
     throw new Error(await readApiError(response, "เตรียมสตรีมเสียงไม่สำเร็จ"));
   }
+  const data = await response.json().catch(() => ({}));
+  pitchPreview = Boolean(data.preview);
 }
 
 function waitForAudioReady() {
@@ -672,11 +610,10 @@ async function loadVideo(videoId) {
   ytError = null;
   audioReady = false;
   shiftLoading = false;
+  pitchPreview = false;
   abortPrepare();
-  abortPrefetch();
   currentPitch = 0;
   renderPitch();
-  resetKeyUi();
   audioEl.pause();
   try {
     audioEl.removeAttribute("src");
@@ -768,6 +705,43 @@ async function startUnlock() {
   }
 }
 
+async function maybeUpgradePitchedAudio() {
+  if (!pitchPreview || pitchUpgradeInFlight || shiftLoading) return;
+  if (!currentVideoId || currentPitch === 0 || !audioReady) return;
+
+  const job = pitchJob;
+  const wanted = currentPitch;
+  const videoId = currentVideoId;
+  pitchUpgradeInFlight = true;
+  try {
+    const params = new URLSearchParams({ videoId, pitch: String(wanted) });
+    const response = await fetch(`/api/pitch-status?${params}`, { cache: "no-store" });
+    if (!response.ok) return;
+    const data = await response.json();
+    if (!data.ready) return;
+    if (job !== pitchJob || currentPitch !== wanted || currentVideoId !== videoId) return;
+
+    pitchPreview = false;
+    const t = targetAudioTime();
+    audioReady = false;
+    attachAudio(videoId);
+    await waitForAudioReady();
+    if (job !== pitchJob || currentPitch !== wanted) return;
+    try {
+      audioEl.currentTime = t;
+    } catch {
+      // iOS can reject seeks during buffering
+    }
+    if (isYtPlaying()) {
+      await audioEl.play().catch(() => {});
+    }
+  } catch {
+    // keep the short preview until the full file is ready
+  } finally {
+    pitchUpgradeInFlight = false;
+  }
+}
+
 unlockEl.addEventListener("pointerdown", (event) => {
   if (event.pointerType === "mouse" && event.button !== 0) return;
   if (currentPitch === 0) return;
@@ -786,9 +760,6 @@ unlockEl.addEventListener("click", async (event) => {
 pitchUp.addEventListener("click", () => setPitch(currentPitch + 1));
 pitchDown.addEventListener("click", () => setPitch(currentPitch - 1));
 pitchReset.addEventListener("click", () => setPitch(0));
-keyEnable.addEventListener("click", () => {
-  enablePitchControls();
-});
 
 setInterval(() => {
   if (!isShiftMode()) return;
@@ -813,6 +784,7 @@ setInterval(() => {
   const jumped = Math.abs(ytTime - lastKnownYtTime) > 1.2;
   lastKnownYtTime = ytTime;
   if (isYtPlaying() && !audioEl.paused) syncAudioTime(jumped);
+  maybeUpgradePitchedAudio();
 }, SYNC_MS);
 
 document.addEventListener("visibilitychange", () => {
