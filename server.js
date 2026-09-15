@@ -12,6 +12,7 @@ const COOKIES_FROM_BROWSER = process.env.YTDLP_COOKIES_FROM_BROWSER || "chrome";
 const COOKIES_FILE = process.env.YTDLP_COOKIES || path.join(__dirname, "cookies.txt");
 const SEARCH_TIMEOUT_MS = 45_000;
 const DOWNLOAD_TIMEOUT_MS = 180_000;
+const PITCH_TIMEOUT_MS = 180_000;
 const CACHE_DIR = path.join(__dirname, "cache");
 
 fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -339,6 +340,131 @@ function cachedAudioPath(videoId) {
   return path.join(CACHE_DIR, `${videoId}.m4a`);
 }
 
+function parsePitch(raw) {
+  const n = Number.parseInt(String(raw ?? "0"), 10);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(-12, Math.min(12, n));
+}
+
+function cachedPitchedPath(videoId, semitones) {
+  if (!semitones) return cachedAudioPath(videoId);
+  const tag = semitones > 0 ? `p${semitones}` : `m${Math.abs(semitones)}`;
+  return path.join(CACHE_DIR, `${videoId}.${tag}.m4a`);
+}
+
+function spawnFfmpeg(args, timeout) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("ffmpeg", args);
+    let log = "";
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(new Error("timed out"));
+    }, timeout);
+    const handle = (buf) => {
+      log += String(buf);
+      if (log.length > 16_384) log = log.slice(-12_288);
+    };
+    child.stdout.on("data", handle);
+    child.stderr.on("data", handle);
+    child.on("error", (error) => finish(error));
+    child.on("close", (code) => {
+      if (code === 0) finish();
+      else finish(new Error(log.trim() || `ffmpeg exited ${code}`));
+    });
+  });
+}
+
+function atempoChain(tempo) {
+  const parts = [];
+  let t = tempo;
+  while (t < 0.5) {
+    parts.push("atempo=0.5");
+    t /= 0.5;
+  }
+  while (t > 2) {
+    parts.push("atempo=2.0");
+    t /= 2;
+  }
+  parts.push(`atempo=${t.toFixed(8)}`);
+  return parts.join(",");
+}
+
+async function pitchShiftFile(src, dest, semitones) {
+  const ratio = 2 ** (semitones / 12);
+  const tmp = `${dest}.${process.pid}.tmp.m4a`;
+  try {
+    await spawnFfmpeg(
+      [
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        src,
+        "-filter:a",
+        `aresample=44100,asetrate=${(44100 * ratio).toFixed(6)},aresample=44100,${atempoChain(1 / ratio)}`,
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-movflags",
+        "+faststart",
+        tmp,
+      ],
+      PITCH_TIMEOUT_MS,
+    );
+    fs.renameSync(tmp, dest);
+  } catch (error) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // ignore leftover temp
+    }
+    throw error;
+  }
+}
+
+async function ensurePitchedAudio(videoId, semitones, onProgress) {
+  const n = parsePitch(semitones);
+  const source = await ensureAudioFile(videoId, onProgress);
+  if (n === 0) return source;
+
+  const dest = cachedPitchedPath(videoId, n);
+  if (fs.existsSync(dest) && fs.statSync(dest).size > 1024) {
+    onProgress?.({ phase: "done", percent: 100 });
+    return dest;
+  }
+
+  const key = `pitch:${videoId}:${n}`;
+  const existing = inFlight.get(key);
+  if (existing) {
+    if (onProgress) existing.listeners?.add(onProgress);
+    return existing.promise;
+  }
+
+  const job = { listeners: new Set(), progress: { phase: "pitch", percent: 80 }, promise: null };
+  if (onProgress) job.listeners.add(onProgress);
+  inFlight.set(key, job);
+  onProgress?.({ phase: "pitch", percent: 80 });
+  job.promise = (async () => {
+    await pitchShiftFile(source, dest, n);
+    if (!fs.existsSync(dest) || fs.statSync(dest).size < 1024) {
+      throw new Error("ปรับคีย์ไม่สำเร็จ");
+    }
+    onProgress?.({ phase: "done", percent: 100 });
+    return dest;
+  })().finally(() => inFlight.delete(key));
+  return job.promise;
+}
+
 async function ensureAudioFile(videoId, onProgress) {
   const dest = cachedAudioPath(videoId);
   if (fs.existsSync(dest) && fs.statSync(dest).size > 1024) {
@@ -504,12 +630,14 @@ app.get("/api/prepare", async (req, res) => {
     res.status(400).json({ error: "Invalid or missing videoId" });
     return;
   }
+  const pitch = parsePitch(req.query.pitch);
+  req.socket.setTimeout(DOWNLOAD_TIMEOUT_MS + PITCH_TIMEOUT_MS + 15_000);
 
   const wantsSse = /text\/event-stream/i.test(req.headers.accept || "");
   if (!wantsSse) {
     try {
-      await ensureAudioFile(videoId);
-      res.json({ ok: true, videoId });
+      await ensurePitchedAudio(videoId, pitch);
+      res.json({ ok: true, videoId, pitch, pitched: pitch !== 0 });
     } catch (error) {
       sendJsonError(res, error);
     }
@@ -522,7 +650,7 @@ app.get("/api/prepare", async (req, res) => {
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
   if (typeof res.flushHeaders === "function") res.flushHeaders();
-  req.socket.setTimeout(DOWNLOAD_TIMEOUT_MS + 15_000);
+  req.socket.setTimeout(DOWNLOAD_TIMEOUT_MS + PITCH_TIMEOUT_MS + 15_000);
 
   let closed = false;
   req.on("close", () => {
@@ -534,7 +662,7 @@ app.get("/api/prepare", async (req, res) => {
   }, 10_000);
 
   try {
-    await ensureAudioFile(videoId, (progress) => {
+    await ensurePitchedAudio(videoId, pitch, (progress) => {
       if (!closed) writeSse(res, progress);
     });
     if (!closed) {
@@ -562,8 +690,11 @@ app.get("/api/stream", async (req, res) => {
     return;
   }
 
+  const pitch = parsePitch(req.query.pitch);
+  req.socket.setTimeout(DOWNLOAD_TIMEOUT_MS + PITCH_TIMEOUT_MS + 15_000);
+
   try {
-    const filePath = await ensureAudioFile(videoId);
+    const filePath = await ensurePitchedAudio(videoId, pitch);
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Accept-Ranges", "bytes");
     res.setHeader("Cache-Control", "public, max-age=3600");

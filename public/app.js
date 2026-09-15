@@ -3,10 +3,9 @@ const IS_IOS =
   /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const DRIFT_SECONDS = IS_IOS ? 0.85 : 0.4;
-const PITCH_LATENCY = 0.04;
-const PITCH_WINDOW = 0.06;
+const PITCH_LATENCY = 0;
 const SYNC_MS = IS_IOS ? 600 : 320;
-const SHIFT_OUTPUT_GAIN = 0.8;
+const SHIFT_OUTPUT_GAIN = 0.6;
 
 const form = document.getElementById("load-form");
 const videoInput = document.getElementById("video-input");
@@ -27,8 +26,6 @@ const audioEl = document.getElementById("shifted-audio");
 
 let ytPlayer = null;
 let currentVideoId = null;
-let pitchShift = null;
-let audioGraphReady = false;
 let audioReady = false;
 let syncing = false;
 let lastKnownYtTime = 0;
@@ -38,6 +35,7 @@ let unlocking = false;
 let ytError = null;
 let prepareAbort = null;
 let shiftLoading = false;
+let pitchJob = 0;
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message || "";
@@ -234,21 +232,6 @@ function formatSemitone(semitones) {
   return String(semitones);
 }
 
-function warmAudioContext() {
-  try {
-    Tone.start();
-  } catch {
-    // ignore until playback
-  }
-  try {
-    const ctx = Tone.getContext();
-    ctx.resume();
-    if (IS_IOS) ctx.lookAhead = 0.1;
-  } catch {
-    // AudioContext may not exist yet
-  }
-}
-
 function withTimeout(promise, ms, message) {
   let timer;
   const timeout = new Promise((_, reject) => {
@@ -265,13 +248,16 @@ function hasAudioSource() {
 }
 
 function streamParams(videoId) {
-  return new URLSearchParams({ videoId });
+  const params = new URLSearchParams({ videoId });
+  if (currentPitch) params.set("pitch", String(currentPitch));
+  return params;
 }
 
 function attachAudio(videoId) {
   if (!videoId) return;
   const src = `/api/stream?${streamParams(videoId)}`;
   audioEl.crossOrigin = "anonymous";
+  audioEl.volume = SHIFT_OUTPUT_GAIN;
   if (audioEl.getAttribute("src") !== src) {
     audioEl.src = src;
     audioEl.load();
@@ -279,8 +265,10 @@ function attachAudio(videoId) {
 }
 
 function restoreYoutubeAudio() {
+  pitchJob += 1;
   abortPrepare();
   shiftLoading = false;
+  audioReady = false;
   audioEl.pause();
   unmuteVideo();
   hideUnlock();
@@ -288,7 +276,6 @@ function restoreYoutubeAudio() {
 
 function renderPitch() {
   semitoneReadout.textContent = formatSemitone(currentPitch);
-  if (pitchShift) pitchShift.pitch = currentPitch;
   pitchCard.classList.toggle("is-flat", currentPitch === 0);
   pitchCard.classList.toggle("is-up", currentPitch > 0);
   pitchCard.classList.toggle("is-down", currentPitch < 0);
@@ -307,55 +294,7 @@ function setPitch(semitones) {
   }
 
   keepVideoSilent();
-  warmAudioContext();
   ensureShiftedPlayback();
-}
-
-async function ensureAudioGraph() {
-  if (audioGraphReady) return;
-  try {
-    await withTimeout(Tone.start(), 2000, "timeout");
-  } catch {
-    // Safari can leave Tone.start() pending
-  }
-  try {
-    const ctx = Tone.getContext();
-    if (ctx.state !== "running") {
-      await withTimeout(ctx.resume(), 1500, "timeout");
-    }
-  } catch {
-    // try connecting anyway
-  }
-  if (audioGraphReady) return;
-
-  const ctx = Tone.getContext();
-  if (ctx.state !== "running") {
-    throw new Error("เบราว์เซอร์ยังบล็อกเสียง ลองกดอีกครั้ง");
-  }
-  if (IS_IOS) ctx.lookAhead = 0.1;
-
-  try {
-    const source = ctx.rawContext.createMediaElementSource(audioEl);
-    pitchShift = new Tone.PitchShift({
-      pitch: currentPitch,
-      windowSize: PITCH_WINDOW,
-      delayTime: 0,
-      feedback: 0,
-      wet: 1,
-    });
-    const shiftGain = new Tone.Gain(SHIFT_OUTPUT_GAIN).toDestination();
-    pitchShift.connect(shiftGain);
-    pitchShift.feedback.value = 0;
-    pitchShift.wet.value = 1;
-    Tone.connect(source, pitchShift);
-    audioGraphReady = true;
-  } catch (error) {
-    if (String(error?.message || error).includes("already")) {
-      audioGraphReady = true;
-      return;
-    }
-    throw new Error("เบราว์เซอร์ยังบล็อกเสียง ลองกดอีกครั้ง");
-  }
 }
 
 function targetAudioTime() {
@@ -384,20 +323,12 @@ function syncAudioTime(force = false) {
 
 async function playShiftedAudio() {
   const token = loadToken;
-  warmAudioContext();
   keepVideoSilent();
   try {
     ytPlayer?.playVideo();
   } catch {
     // iframe may still be cueing
   }
-
-  try {
-    await ensureAudioGraph();
-  } catch {
-    // element playback can still work
-  }
-  if (loadToken !== token || currentPitch === 0) return;
 
   attachAudio(currentVideoId);
   const alreadyPlaying = !audioEl.paused;
@@ -420,31 +351,33 @@ async function playShiftedAudio() {
 }
 
 async function ensureShiftedPlayback() {
-  if (!currentVideoId || currentPitch === 0 || shiftLoading) return;
+  if (!currentVideoId || currentPitch === 0) return;
 
-  if (audioReady && hasAudioSource() && pitchShift && !audioEl.paused) {
-    pitchShift.pitch = currentPitch;
+  const wanted = currentPitch;
+  const expectedSrc = `/api/stream?${streamParams(currentVideoId)}`;
+  if (audioReady && audioEl.getAttribute("src") === expectedSrc && !audioEl.paused) {
     keepVideoSilent();
     hideLoading();
     return;
   }
 
-  const token = loadToken;
+  const job = ++pitchJob;
+  abortPrepare();
   shiftLoading = true;
+  audioReady = false;
   showLoading();
+  setStatus("กำลังปรับคีย์...");
 
   try {
-    if (!audioReady || !hasAudioSource()) {
-      await prepareAudio(currentVideoId);
-      if (token !== loadToken || currentPitch === 0) return;
-      attachAudio(currentVideoId);
-      await waitForAudioReady();
-    }
-    if (token !== loadToken || currentPitch === 0) return;
-    if (pitchShift) pitchShift.pitch = currentPitch;
+    await prepareAudio(currentVideoId);
+    if (job !== pitchJob || currentPitch !== wanted || currentPitch === 0) return;
+    attachAudio(currentVideoId);
+    await waitForAudioReady();
+    if (job !== pitchJob || currentPitch !== wanted || currentPitch === 0) return;
 
     try {
       await playShiftedAudio();
+      if (job === pitchJob) setStatus("");
     } catch (error) {
       hideLoading();
       unlockEl.hidden = false;
@@ -454,16 +387,17 @@ async function ensureShiftedPlayback() {
       return;
     }
   } catch (error) {
-    if (token !== loadToken || error.name === "AbortError") return;
+    if (job !== pitchJob || error.name === "AbortError") return;
     hideUnlock();
     setStatus(error.message || "โหลดเสียงไม่สำเร็จ", true);
   } finally {
-    if (token === loadToken) shiftLoading = false;
+    if (job === pitchJob) shiftLoading = false;
   }
 }
 
 function stopPlayback() {
   loadToken += 1;
+  pitchJob += 1;
   unlocking = false;
   audioReady = false;
   ytError = null;
@@ -620,7 +554,7 @@ function waitForAudioReady() {
     const timer = setTimeout(() => {
       cleanup();
       reject(new Error("หมดเวลารอสตรีมเสียง จากเซิร์ฟเวอร์"));
-    }, 60_000);
+    }, 180_000);
     const onReady = () => {
       if (audioEl.readyState >= 1) succeed();
     };
@@ -748,7 +682,6 @@ async function startUnlock() {
 unlockEl.addEventListener("pointerdown", (event) => {
   if (event.pointerType === "mouse" && event.button !== 0) return;
   if (currentPitch === 0) return;
-  warmAudioContext();
   if (hasAudioSource()) {
     const playPromise = audioEl.play();
     if (playPromise) playPromise.catch(() => {});
