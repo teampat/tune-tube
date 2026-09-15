@@ -7,7 +7,7 @@ const IS_IOS =
 const DRIFT_SECONDS = IS_IOS ? 0.55 : 0.4;
 const SEEK_SECONDS = 0.5;
 const SYNC_MS = IS_IOS ? 500 : 320;
-const STRETCH_BUFFER = 4096;
+const STRETCH_BUFFER = IS_IOS ? 4096 : 16384;
 const SILENT_WAV =
   "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
 let SHIFT_OUTPUT_GAIN = 0.75;
@@ -272,17 +272,8 @@ function ytTimelineJumped(ytTime = currentYtTime()) {
   return Math.abs(ytTime - expected) > SEEK_SECONDS;
 }
 
-function pitchLatency() {
-  const ctx = audioCtx;
-  if (!ctx?.sampleRate) return 0;
-  const node = STRETCH_BUFFER / ctx.sampleRate;
-  const out = Number.isFinite(ctx.outputLatency) ? ctx.outputLatency : 0;
-  const base = Number.isFinite(ctx.baseLatency) ? ctx.baseLatency : 0;
-  return node + (out || base);
-}
-
 function originalPlayhead() {
-  return Math.max(0, currentYtTime() + pitchLatency());
+  return Math.max(0, currentYtTime());
 }
 
 function getAudioCtx() {
@@ -324,7 +315,7 @@ function warmIosGraph() {
   const ctx = getAudioCtx();
   if (iosWarmNode) return;
   try {
-    iosWarmNode = ctx.createScriptProcessor(STRETCH_BUFFER, 1, 1);
+    iosWarmNode = ctx.createScriptProcessor(4096, 1, 1);
     iosWarmNode.onaudioprocess = (event) => {
       event.outputBuffer.getChannelData(0).fill(0);
     };
@@ -471,6 +462,12 @@ function startPreview(buffer, semitones, _at) {
   previewShifter = new PitchShifter(ctx, buffer, STRETCH_BUFFER);
   previewShifter.tempo = 1;
   previewShifter.pitchSemitones = semitones;
+  try {
+    previewShifter._soundtouch.stretch._quickSeek = false;
+    previewShifter._soundtouch.stretch.setParameters(ctx.sampleRate, 82, 28, 12);
+  } catch {
+    // SoundTouch internals may differ by build
+  }
   previewShifter.connect(previewGain);
   previewConnected = true;
   audioReady = true;
