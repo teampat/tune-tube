@@ -66,12 +66,13 @@ const COOKIES_FROM_BROWSER = envStr("YTDLP_COOKIES_FROM_BROWSER", "chrome");
 const COOKIES_FILE = envPath("YTDLP_COOKIES", "cookies.txt");
 const CACHE_DIR = envPath("CACHE_DIR", "cache");
 const SEARCH_TIMEOUT_MS = envInt("SEARCH_TIMEOUT_MS", 45_000, 5_000, 300_000);
+const SEARCH_RESULT_LIMIT = envInt("SEARCH_RESULT_LIMIT", 10, 1, 20);
 const DOWNLOAD_TIMEOUT_MS = envInt("DOWNLOAD_TIMEOUT_MS", 180_000, 15_000, 600_000);
 const PITCH_TIMEOUT_MS = envInt("PITCH_TIMEOUT_MS", 180_000, 15_000, 600_000);
 const PITCH_LIMIT = envInt("PITCH_LIMIT", 12, 1, 24);
 const PREFETCH_PITCH_MIN = envInt("PREFETCH_PITCH_MIN", -3, -PITCH_LIMIT, 0);
 const PREFETCH_PITCH_MAX = envInt("PREFETCH_PITCH_MAX", 3, 0, PITCH_LIMIT);
-const PITCH_RENDER_CONCURRENCY = envInt("PITCH_RENDER_CONCURRENCY", 2, 1, 8);
+const PITCH_RENDER_CONCURRENCY = envInt("PITCH_RENDER_CONCURRENCY", 4, 1, 8);
 const PITCH_AUDIO_BITRATE = envStr("PITCH_AUDIO_BITRATE", "192k");
 const SHIFT_OUTPUT_GAIN = envFloat("SHIFT_OUTPUT_GAIN", 0.75, 0.05, 1);
 
@@ -307,7 +308,7 @@ function parseClock(value) {
   return null;
 }
 
-function mapSearchHits(renderers, limit = 8) {
+function mapSearchHits(renderers, limit = SEARCH_RESULT_LIMIT) {
   const results = [];
   const seen = new Set();
   for (const item of renderers) {
@@ -412,6 +413,20 @@ function cachedPitchedPath(videoId, semitones) {
   return path.join(CACHE_DIR, `${videoId}.${tag}.m4a`);
 }
 
+function cachedPcmPath(videoId) {
+  return path.join(CACHE_DIR, `${videoId}.pcm.wav`);
+}
+
+function existingPcmPath(videoId) {
+  const dest = cachedPcmPath(videoId);
+  try {
+    if (fs.existsSync(dest) && fs.statSync(dest).size > 1024) return dest;
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 function spawnFfmpeg(args, timeout) {
   return new Promise((resolve, reject) => {
     const child = spawn("ffmpeg", args);
@@ -459,6 +474,9 @@ function atempoChain(tempo) {
 
 async function pitchShiftFile(src, dest, semitones) {
   const ratio = 2 ** (semitones / 12);
+  const rate = (44100 * ratio).toFixed(6);
+  const pitched = `asetrate=${rate},aresample=44100,${atempoChain(1 / ratio)}`;
+  const filter = /\.wav$/i.test(src) ? pitched : `aresample=44100,${pitched}`;
   const tmp = `${dest}.${process.pid}.tmp.m4a`;
   try {
     await spawnFfmpeg(
@@ -467,12 +485,17 @@ async function pitchShiftFile(src, dest, semitones) {
         "-hide_banner",
         "-loglevel",
         "error",
+        "-threads",
+        "0",
         "-i",
         src,
+        "-vn",
         "-filter:a",
-        `aresample=44100,asetrate=${(44100 * ratio).toFixed(6)},aresample=44100,${atempoChain(1 / ratio)}`,
+        filter,
         "-c:a",
         "aac",
+        "-aac_coder",
+        "fast",
         "-b:a",
         PITCH_AUDIO_BITRATE,
         "-movflags",
@@ -492,9 +515,61 @@ async function pitchShiftFile(src, dest, semitones) {
   }
 }
 
-async function ensurePitchedAudio(videoId, semitones, onProgress) {
-  const n = parsePitch(semitones);
+async function ensurePcmWav(videoId, onProgress) {
   const source = await ensureAudioFile(videoId, onProgress);
+  const existing = existingPcmPath(videoId);
+  if (existing) return existing;
+
+  const dest = cachedPcmPath(videoId);
+  const key = `pcm:${videoId}`;
+  const inflight = inFlight.get(key);
+  if (inflight) return inflight.promise;
+
+  const job = { listeners: new Set(), progress: { phase: "pcm" }, promise: null };
+  inFlight.set(key, job);
+  job.promise = (async () => {
+    const tmp = `${dest}.${process.pid}.tmp.wav`;
+    try {
+      await spawnFfmpeg(
+        [
+          "-y",
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-threads",
+          "0",
+          "-i",
+          source,
+          "-vn",
+          "-ac",
+          "2",
+          "-ar",
+          "44100",
+          "-c:a",
+          "pcm_s16le",
+          tmp,
+        ],
+        PITCH_TIMEOUT_MS,
+      );
+      fs.renameSync(tmp, dest);
+      if (!fs.existsSync(dest) || fs.statSync(dest).size < 1024) {
+        throw new Error("แปลงไฟล์เสียงไม่สำเร็จ");
+      }
+      return dest;
+    } catch (error) {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        // ignore leftover temp
+      }
+      return source;
+    }
+  })().finally(() => inFlight.delete(key));
+  return job.promise;
+}
+
+async function renderPitchedAudio(videoId, semitones, source, onProgress) {
+  const n = parsePitch(semitones);
   if (n === 0) return source;
 
   const dest = cachedPitchedPath(videoId, n);
@@ -525,6 +600,13 @@ async function ensurePitchedAudio(videoId, semitones, onProgress) {
   return job.promise;
 }
 
+async function ensurePitchedAudio(videoId, semitones, onProgress) {
+  const n = parsePitch(semitones);
+  const source = await ensureAudioFile(videoId, onProgress);
+  if (n === 0) return source;
+  return renderPitchedAudio(videoId, n, existingPcmPath(videoId) || source, onProgress);
+}
+
 function prefetchPitchList() {
   const list = [];
   for (let n = 1; n <= PREFETCH_PITCH_MAX; n += 1) {
@@ -548,11 +630,11 @@ async function mapPool(items, limit, worker) {
 }
 
 async function ensurePitchBand(videoId, onProgress) {
-  await ensureAudioFile(videoId, onProgress);
+  const source = await ensurePcmWav(videoId, onProgress);
   const pitches = prefetchPitchList();
   let done = 0;
   await mapPool(pitches, PITCH_RENDER_CONCURRENCY, async (semitones) => {
-    await ensurePitchedAudio(videoId, semitones);
+    await renderPitchedAudio(videoId, semitones, source);
     done += 1;
     onProgress?.({
       phase: "pitch",
@@ -710,12 +792,13 @@ app.get("/api/search", async (req, res) => {
         "--socket-timeout",
         "15",
         "-J",
-        `ytsearch6:${query}`,
+        `ytsearch${SEARCH_RESULT_LIMIT}:${query}`,
       ]);
       const { stdout } = await execFileAsync("yt-dlp", searchArgs, 20_000);
       const data = JSON.parse(stdout);
       results = (data.entries || [])
         .filter((entry) => entry && entry.id)
+        .slice(0, SEARCH_RESULT_LIMIT)
         .map((entry) => ({
           videoId: entry.id,
           title: entry.title || entry.id,
