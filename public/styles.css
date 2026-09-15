@@ -408,6 +408,10 @@ body:has(#stage:not([hidden])) {
   display: block !important;
 }
 
+.key-enable.is-loading #key-enable-label {
+  display: none;
+}
+
 .pitch-btn {
   width: auto;
   min-width: 64px;

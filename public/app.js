@@ -22,7 +22,6 @@ const loadSpinnerEl = document.getElementById("load-spinner");
 const posterEl = document.getElementById("player-poster");
 const pitchCard = document.getElementById("pitch-card");
 const keyEnable = document.getElementById("key-enable");
-const keyEnableLabel = document.getElementById("key-enable-label");
 const keySpinner = document.getElementById("key-spinner");
 const pitchUp = document.getElementById("pitch-up");
 const pitchDown = document.getElementById("pitch-down");
@@ -102,8 +101,8 @@ function setKeyEnableLoading(loading) {
   keyEnable.classList.toggle("is-loading", loading);
   keyEnable.disabled = loading;
   keyEnable.setAttribute("aria-busy", loading ? "true" : "false");
+  keyEnable.setAttribute("aria-label", loading ? "กำลังโหลดคีย์" : "เปลี่ยนคีย์");
   keySpinner.hidden = !loading;
-  keyEnableLabel.textContent = loading ? "กำลังเตรียมคีย์..." : "เปลี่ยนคีย์";
 }
 
 function resetKeyUi() {
@@ -127,7 +126,7 @@ async function enablePitchControls() {
   abortPrefetch();
   prefetchAbort = new AbortController();
   setKeyEnableLoading(true);
-  setStatus(`กำลังเตรียมคีย์ ${PREFETCH_MIN} ถึง +${PREFETCH_MAX}`);
+  setStatus("");
 
   try {
     const response = await fetch(`/api/prefetch?videoId=${encodeURIComponent(currentVideoId)}`, {
