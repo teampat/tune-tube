@@ -5,7 +5,7 @@ const IS_IOS =
 const DRIFT_SECONDS = IS_IOS ? 0.85 : 0.4;
 const PITCH_LATENCY = 0;
 const SYNC_MS = IS_IOS ? 600 : 320;
-const SHIFT_OUTPUT_GAIN = 0.6;
+const SHIFT_OUTPUT_GAIN = 0.7;
 
 const form = document.getElementById("load-form");
 const videoInput = document.getElementById("video-input");
