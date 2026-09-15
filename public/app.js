@@ -829,12 +829,9 @@ setInterval(() => {
   if (!isShiftMode()) return;
   keepVideoSilent();
 
-  if (IS_IOS) {
+  if (shiftLoading || isYtPlaying()) {
     getAudioCtx().resume().catch(() => {});
     resumePreview();
-  } else if (shiftLoading || isYtPlaying()) {
-    getAudioCtx().resume().catch(() => {});
-    connectPreview();
   } else {
     pausePreview();
   }
@@ -846,17 +843,20 @@ setInterval(() => {
   const jumped = ytTimelineJumped(ytTime);
   if (jumped && previewShifter) {
     snapToOriginal();
-    if (isYtPlaying() || IS_IOS) resumePreview();
+    if (isYtPlaying()) resumePreview();
   }
   noteYtTime(ytTime);
-  if (!jumped && (isYtPlaying() || IS_IOS) && previewConnected) syncAudioTime(false);
+  if (!jumped && isYtPlaying() && previewConnected) syncAudioTime(false);
 }, SYNC_MS);
 
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden && isShiftMode()) {
+  if (!isShiftMode()) return;
+  if (document.hidden && isYtPlaying()) {
     getAudioCtx().resume().catch(() => {});
     kickHtmlAudio();
     resumePreview();
+  } else if (!isYtPlaying()) {
+    pausePreview();
   }
 });
 
