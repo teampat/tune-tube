@@ -53,14 +53,6 @@ function envStr(name, fallback) {
   return value == null || value === "" ? fallback : value;
 }
 
-function envBool(name, fallback) {
-  const raw = String(process.env[name] ?? "").trim().toLowerCase();
-  if (!raw) return fallback;
-  if (["1", "true", "yes", "on"].includes(raw)) return true;
-  if (["0", "false", "no", "off"].includes(raw)) return false;
-  return fallback;
-}
-
 function envPath(name, fallback) {
   const value = envStr(name, fallback);
   return path.isAbsolute(value) ? value : path.join(__dirname, value);
@@ -76,17 +68,8 @@ const CACHE_DIR = envPath("CACHE_DIR", "cache");
 const SEARCH_TIMEOUT_MS = envInt("SEARCH_TIMEOUT_MS", 45_000, 5_000, 300_000);
 const SEARCH_RESULT_LIMIT = envInt("SEARCH_RESULT_LIMIT", 10, 1, 20);
 const DOWNLOAD_TIMEOUT_MS = envInt("DOWNLOAD_TIMEOUT_MS", 180_000, 15_000, 600_000);
-const PITCH_TIMEOUT_MS = envInt("PITCH_TIMEOUT_MS", 180_000, 15_000, 600_000);
 const PITCH_LIMIT = envInt("PITCH_LIMIT", 12, 1, 24);
-const PREFETCH_PITCH = envBool("PREFETCH_PITCH", false);
-const PREFETCH_PITCH_MIN = envInt("PREFETCH_PITCH_MIN", -3, -PITCH_LIMIT, 0);
-const PREFETCH_PITCH_MAX = envInt("PREFETCH_PITCH_MAX", 3, 0, PITCH_LIMIT);
-const PITCH_RENDER_CONCURRENCY = envInt("PITCH_RENDER_CONCURRENCY", 4, 1, 8);
-const PITCH_AUDIO_BITRATE = envStr("PITCH_AUDIO_BITRATE", "192k");
 const SHIFT_OUTPUT_GAIN = envFloat("SHIFT_OUTPUT_GAIN", 0.75, 0.05, 1);
-const PITCH_CODEC = process.platform === "darwin" ? "aac_at" : "aac";
-const PITCH_EXT = "m4a";
-const PITCH_MIME = "audio/mp4";
 
 fs.mkdirSync(CACHE_DIR, { recursive: true });
 
@@ -413,247 +396,6 @@ function cachedAudioPath(videoId) {
   return path.join(CACHE_DIR, `${videoId}.m4a`);
 }
 
-function parsePitch(raw) {
-  const n = Number.parseInt(String(raw ?? "0"), 10);
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, n));
-}
-
-function cachedPitchedPath(videoId, semitones) {
-  if (!semitones) return cachedAudioPath(videoId);
-  const tag = semitones > 0 ? `p${semitones}` : `m${Math.abs(semitones)}`;
-  return path.join(CACHE_DIR, `${videoId}.${tag}.${PITCH_EXT}`);
-}
-
-function cachedPcmPath(videoId) {
-  return path.join(CACHE_DIR, `${videoId}.pcm.wav`);
-}
-
-function existingPcmPath(videoId) {
-  const dest = cachedPcmPath(videoId);
-  try {
-    if (fs.existsSync(dest) && fs.statSync(dest).size > 1024) return dest;
-  } catch {
-    // ignore
-  }
-  return null;
-}
-
-function spawnFfmpeg(args, timeout) {
-  return new Promise((resolve, reject) => {
-    const child = spawn("ffmpeg", args);
-    let log = "";
-    let settled = false;
-    const finish = (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (error) reject(error);
-      else resolve();
-    };
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      finish(new Error("timed out"));
-    }, timeout);
-    const handle = (buf) => {
-      log += String(buf);
-      if (log.length > 16_384) log = log.slice(-12_288);
-    };
-    child.stdout.on("data", handle);
-    child.stderr.on("data", handle);
-    child.on("error", (error) => finish(error));
-    child.on("close", (code) => {
-      if (code === 0) finish();
-      else finish(new Error(log.trim() || `ffmpeg exited ${code}`));
-    });
-  });
-}
-
-function atempoChain(tempo) {
-  const parts = [];
-  let t = tempo;
-  while (t < 0.5) {
-    parts.push("atempo=0.5");
-    t /= 0.5;
-  }
-  while (t > 2) {
-    parts.push("atempo=2.0");
-    t /= 2;
-  }
-  parts.push(`atempo=${t.toFixed(8)}`);
-  return parts.join(",");
-}
-
-function pitchAudioFilter(src, semitones) {
-  const ratio = 2 ** (semitones / 12);
-  const rate = (44100 * ratio).toFixed(6);
-  const pitched = `asetrate=${rate},aresample=44100,${atempoChain(1 / ratio)}`;
-  return /\.wav$/i.test(src) ? pitched : `aresample=44100,${pitched}`;
-}
-
-function fileSize(filePath) {
-  try {
-    if (!filePath || !fs.existsSync(filePath)) return 0;
-    return fs.statSync(filePath).size;
-  } catch {
-    return 0;
-  }
-}
-
-function pitchedFileReady(filePath) {
-  return fileSize(filePath) > 1024;
-}
-
-async function pitchShiftFile(src, dest, semitones, tmp) {
-  const out = tmp || `${dest}.${process.pid}.tmp.${PITCH_EXT}`;
-  try {
-    await spawnFfmpeg(
-      [
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-threads",
-        "0",
-        "-i",
-        src,
-        "-vn",
-        "-filter:a",
-        pitchAudioFilter(src, semitones),
-        "-c:a",
-        PITCH_CODEC,
-        "-b:a",
-        PITCH_AUDIO_BITRATE,
-        "-movflags",
-        "+faststart",
-        "-f",
-        "mp4",
-        out,
-      ],
-      PITCH_TIMEOUT_MS,
-    );
-    fs.renameSync(out, dest);
-  } catch (error) {
-    try {
-      fs.unlinkSync(out);
-    } catch {
-      // ignore leftover temp
-    }
-    throw error;
-  }
-}
-
-function beginPitchedAudio(videoId, semitones, source, onProgress) {
-  const n = parsePitch(semitones);
-  if (n === 0) {
-    return {
-      dest: source,
-      tmp: source,
-      failed: false,
-      promise: Promise.resolve(source),
-    };
-  }
-
-  const dest = cachedPitchedPath(videoId, n);
-  if (pitchedFileReady(dest)) {
-    return {
-      dest,
-      tmp: dest,
-      failed: false,
-      promise: Promise.resolve(dest),
-    };
-  }
-
-  const key = `pitch:${videoId}:${n}`;
-  const existing = inFlight.get(key);
-  if (existing) {
-    if (onProgress) existing.listeners?.add(onProgress);
-    return existing;
-  }
-
-  const tmp = `${dest}.${process.pid}.${Date.now()}.tmp.${PITCH_EXT}`;
-  const job = {
-    dest,
-    tmp,
-    failed: false,
-    listeners: new Set(),
-    progress: { phase: "pitch", percent: 80 },
-    promise: null,
-  };
-  if (onProgress) job.listeners.add(onProgress);
-  inFlight.set(key, job);
-  onProgress?.({ phase: "pitch", percent: 80 });
-  job.promise = (async () => {
-    try {
-      await pitchShiftFile(source, dest, n, tmp);
-      if (!pitchedFileReady(dest)) throw new Error("ปรับคีย์ไม่สำเร็จ");
-      onProgress?.({ phase: "done", percent: 100 });
-      return dest;
-    } catch (error) {
-      job.failed = true;
-      throw error;
-    }
-  })().finally(() => inFlight.delete(key));
-  return job;
-}
-
-function sendPitchedFile(res, filePath) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Accept-Ranges", "bytes");
-  res.setHeader("Cache-Control", "public, max-age=3600");
-  res.sendFile(filePath, {
-    headers: { "Content-Type": PITCH_MIME },
-  });
-}
-
-async function renderPitchedAudio(videoId, semitones, source, onProgress) {
-  return beginPitchedAudio(videoId, semitones, source, onProgress).promise;
-}
-
-async function ensurePitchedAudio(videoId, semitones, onProgress) {
-  const n = parsePitch(semitones);
-  const source = await ensureAudioFile(videoId, onProgress);
-  if (n === 0) return source;
-  return renderPitchedAudio(videoId, n, existingPcmPath(videoId) || source, onProgress);
-}
-
-function prefetchPitchList() {
-  const list = [];
-  for (let n = 1; n <= PREFETCH_PITCH_MAX; n += 1) {
-    list.push(n);
-    if (-n >= PREFETCH_PITCH_MIN) list.push(-n);
-  }
-  return list;
-}
-
-async function mapPool(items, limit, worker) {
-  let index = 0;
-  async function run() {
-    while (index < items.length) {
-      const current = index;
-      index += 1;
-      await worker(items[current]);
-    }
-  }
-  const n = Math.min(Math.max(1, limit), items.length);
-  await Promise.all(Array.from({ length: n }, run));
-}
-
-async function ensurePitchBand(videoId, onProgress) {
-  const source = await ensureAudioFile(videoId, onProgress);
-  const pitches = prefetchPitchList();
-  let done = 0;
-  await mapPool(pitches, PITCH_RENDER_CONCURRENCY, async (semitones) => {
-    await renderPitchedAudio(videoId, semitones, source);
-    done += 1;
-    onProgress?.({
-      phase: "pitch",
-      percent: Math.round((done / pitches.length) * 100),
-      pitch: semitones,
-    });
-  });
-}
-
 async function ensureAudioFile(videoId, onProgress) {
   const dest = cachedAudioPath(videoId);
   if (fs.existsSync(dest) && fs.statSync(dest).size > 1024) {
@@ -737,9 +479,6 @@ function sendJsonError(res, error) {
 app.get("/api/config", (_req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({
-    prefetch: PREFETCH_PITCH,
-    prefetchMin: PREFETCH_PITCH_MIN,
-    prefetchMax: PREFETCH_PITCH_MAX,
     pitchLimit: PITCH_LIMIT,
     shiftOutputGain: SHIFT_OUTPUT_GAIN,
   });
@@ -831,23 +570,13 @@ app.get("/api/prefetch", async (req, res) => {
     res.status(400).json({ error: "Invalid or missing videoId" });
     return;
   }
-  req.socket.setTimeout(DOWNLOAD_TIMEOUT_MS + PITCH_TIMEOUT_MS * 4 + 15_000);
+  req.socket.setTimeout(DOWNLOAD_TIMEOUT_MS + 15_000);
   try {
-    if (!PREFETCH_PITCH) {
-      res.json({
-        ok: true,
-        videoId,
-        prefetch: false,
-      });
-      return;
-    }
-    await ensurePitchBand(videoId);
+    await ensureAudioFile(videoId);
     res.json({
       ok: true,
       videoId,
-      prefetch: true,
-      from: PREFETCH_PITCH_MIN,
-      to: PREFETCH_PITCH_MAX,
+      prefetch: false,
     });
   } catch (error) {
     sendJsonError(res, error);
@@ -860,24 +589,13 @@ app.get("/api/prepare", async (req, res) => {
     res.status(400).json({ error: "Invalid or missing videoId" });
     return;
   }
-  const pitch = parsePitch(req.query.pitch);
-  req.socket.setTimeout(DOWNLOAD_TIMEOUT_MS + PITCH_TIMEOUT_MS + 15_000);
+  req.socket.setTimeout(DOWNLOAD_TIMEOUT_MS + 15_000);
 
   const wantsSse = /text\/event-stream/i.test(req.headers.accept || "");
   if (!wantsSse) {
     try {
-      const source = await ensureAudioFile(videoId);
-      if (pitch === 0) {
-        res.json({ ok: true, videoId, pitch, pitched: false });
-        return;
-      }
-      await beginPitchedAudio(videoId, pitch, existingPcmPath(videoId) || source).promise;
-      res.json({
-        ok: true,
-        videoId,
-        pitch,
-        pitched: true,
-      });
+      await ensureAudioFile(videoId);
+      res.json({ ok: true, videoId, pitched: false, ready: true });
     } catch (error) {
       sendJsonError(res, error);
     }
@@ -890,7 +608,7 @@ app.get("/api/prepare", async (req, res) => {
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
   if (typeof res.flushHeaders === "function") res.flushHeaders();
-  req.socket.setTimeout(DOWNLOAD_TIMEOUT_MS + PITCH_TIMEOUT_MS + 15_000);
+  req.socket.setTimeout(DOWNLOAD_TIMEOUT_MS + 15_000);
 
   let closed = false;
   req.on("close", () => {
@@ -902,12 +620,9 @@ app.get("/api/prepare", async (req, res) => {
   }, 10_000);
 
   try {
-    const source = await ensureAudioFile(videoId, (progress) => {
+    await ensureAudioFile(videoId, (progress) => {
       if (!closed) writeSse(res, progress);
     });
-    if (pitch !== 0) {
-      await beginPitchedAudio(videoId, pitch, existingPcmPath(videoId) || source).promise;
-    }
     if (!closed) {
       writeSse(res, { phase: "done", percent: 100 });
       res.end();
@@ -933,24 +648,16 @@ app.get("/api/stream", async (req, res) => {
     return;
   }
 
-  const pitch = parsePitch(req.query.pitch);
-  req.socket.setTimeout(DOWNLOAD_TIMEOUT_MS + PITCH_TIMEOUT_MS + 15_000);
+  req.socket.setTimeout(DOWNLOAD_TIMEOUT_MS + 15_000);
 
   try {
-    if (pitch === 0) {
-      const filePath = await ensureAudioFile(videoId);
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Accept-Ranges", "bytes");
-      res.setHeader("Cache-Control", "public, max-age=3600");
-      res.sendFile(filePath, {
-        headers: { "Content-Type": "audio/mp4" },
-      });
-      return;
-    }
-
-    const source = await ensureAudioFile(videoId);
-    const filePath = await beginPitchedAudio(videoId, pitch, existingPcmPath(videoId) || source).promise;
-    sendPitchedFile(res, filePath);
+    const filePath = await ensureAudioFile(videoId);
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.sendFile(filePath, {
+      headers: { "Content-Type": "audio/mp4" },
+    });
   } catch (error) {
     if (!res.headersSent) sendJsonError(res, error);
     else res.destroy();
@@ -975,7 +682,7 @@ function lanUrls() {
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`TuneTube running at http://localhost:${PORT}`);
-  console.log(`pitch encoder: ${PITCH_CODEC} ${PITCH_AUDIO_BITRATE} m4a`);
+  console.log("pitch: frontend SoundTouch (original m4a cache)");
   for (const url of lanUrls()) {
     console.log(`tablet: ${url}`);
   }
