@@ -5,7 +5,10 @@ const IS_IOS =
 const DRIFT_SECONDS = IS_IOS ? 0.85 : 0.4;
 const PITCH_LATENCY = 0;
 const SYNC_MS = IS_IOS ? 600 : 320;
-const SHIFT_OUTPUT_GAIN = 0.7;
+let SHIFT_OUTPUT_GAIN = 0.75;
+let PREFETCH_MIN = -3;
+let PREFETCH_MAX = 3;
+let PITCH_LIMIT = 12;
 
 const form = document.getElementById("load-form");
 const videoInput = document.getElementById("video-input");
@@ -17,7 +20,10 @@ const unlockEl = document.getElementById("unlock");
 const unlockBtn = document.getElementById("unlock-btn");
 const loadSpinnerEl = document.getElementById("load-spinner");
 const posterEl = document.getElementById("player-poster");
-const pitchCard = document.querySelector(".pitch-card");
+const pitchCard = document.getElementById("pitch-card");
+const keyEnable = document.getElementById("key-enable");
+const keyEnableLabel = document.getElementById("key-enable-label");
+const keySpinner = document.getElementById("key-spinner");
 const pitchUp = document.getElementById("pitch-up");
 const pitchDown = document.getElementById("pitch-down");
 const pitchReset = document.getElementById("pitch-reset");
@@ -34,8 +40,26 @@ let currentPitch = 0;
 let unlocking = false;
 let ytError = null;
 let prepareAbort = null;
+let prefetchAbort = null;
 let shiftLoading = false;
 let pitchJob = 0;
+let pitchControlsReady = false;
+
+async function loadServerConfig() {
+  try {
+    const response = await fetch("/api/config");
+    if (!response.ok) return;
+    const data = await response.json();
+    if (Number.isFinite(data.shiftOutputGain)) SHIFT_OUTPUT_GAIN = data.shiftOutputGain;
+    if (Number.isFinite(data.prefetchMin)) PREFETCH_MIN = data.prefetchMin;
+    if (Number.isFinite(data.prefetchMax)) PREFETCH_MAX = data.prefetchMax;
+    if (Number.isFinite(data.pitchLimit)) PITCH_LIMIT = data.pitchLimit;
+  } catch {
+    // keep defaults
+  }
+}
+
+const configReady = loadServerConfig();
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message || "";
@@ -66,6 +90,64 @@ function abortPrepare() {
   if (!prepareAbort) return;
   prepareAbort.abort();
   prepareAbort = null;
+}
+
+function abortPrefetch() {
+  if (!prefetchAbort) return;
+  prefetchAbort.abort();
+  prefetchAbort = null;
+}
+
+function resetKeyUi() {
+  pitchControlsReady = false;
+  pitchCard.hidden = true;
+  keyEnable.disabled = false;
+  keyEnable.classList.remove("is-loading");
+  keySpinner.hidden = true;
+  keyEnableLabel.textContent = "เปลี่ยนคีย์";
+  keyEnable.hidden = !currentVideoId;
+}
+
+function showPitchControls() {
+  pitchControlsReady = true;
+  keyEnable.hidden = true;
+  keyEnable.disabled = false;
+  keyEnable.classList.remove("is-loading");
+  keySpinner.hidden = true;
+  keyEnableLabel.textContent = "เปลี่ยนคีย์";
+  pitchCard.hidden = false;
+}
+
+async function enablePitchControls() {
+  if (!currentVideoId || pitchControlsReady) return;
+  await configReady;
+  const token = loadToken;
+  abortPrefetch();
+  prefetchAbort = new AbortController();
+  keyEnable.disabled = true;
+  keyEnable.classList.add("is-loading");
+  keySpinner.hidden = false;
+  keyEnableLabel.textContent = "กำลังเตรียมคีย์...";
+  setStatus(`กำลังเตรียมคีย์ ${PREFETCH_MIN} ถึง +${PREFETCH_MAX}`);
+
+  try {
+    const response = await fetch(`/api/prefetch?videoId=${encodeURIComponent(currentVideoId)}`, {
+      signal: prefetchAbort.signal,
+    });
+    if (!response.ok) {
+      throw new Error(await readApiError(response, "เตรียมคีย์ไม่สำเร็จ"));
+    }
+    if (token !== loadToken) return;
+    showPitchControls();
+    setStatus("");
+  } catch (error) {
+    if (error.name === "AbortError" || token !== loadToken) return;
+    keyEnable.disabled = false;
+    keyEnable.classList.remove("is-loading");
+    keySpinner.hidden = true;
+    keyEnableLabel.textContent = "เปลี่ยนคีย์";
+    setStatus(error.message || "เตรียมคีย์ไม่สำเร็จ", true);
+  }
 }
 
 function formatDuration(seconds) {
@@ -283,7 +365,8 @@ function renderPitch() {
 }
 
 function setPitch(semitones) {
-  currentPitch = Math.max(-12, Math.min(12, Number(semitones) || 0));
+  if (!pitchControlsReady) return;
+  currentPitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, Number(semitones) || 0));
   renderPitch();
 
   if (!currentVideoId) return;
@@ -403,6 +486,9 @@ function stopPlayback() {
   ytError = null;
   shiftLoading = false;
   abortPrepare();
+  abortPrefetch();
+  currentVideoId = null;
+  resetKeyUi();
   hideUnlock();
   unlockBtn.textContent = "กดเพื่อเล่น";
   audioEl.pause();
@@ -586,8 +672,10 @@ async function loadVideo(videoId) {
   audioReady = false;
   shiftLoading = false;
   abortPrepare();
+  abortPrefetch();
   currentPitch = 0;
   renderPitch();
+  resetKeyUi();
   audioEl.pause();
   try {
     audioEl.removeAttribute("src");
@@ -697,6 +785,9 @@ unlockEl.addEventListener("click", async (event) => {
 pitchUp.addEventListener("click", () => setPitch(currentPitch + 1));
 pitchDown.addEventListener("click", () => setPitch(currentPitch - 1));
 pitchReset.addEventListener("click", () => setPitch(0));
+keyEnable.addEventListener("click", () => {
+  enablePitchControls();
+});
 
 setInterval(() => {
   if (!isShiftMode()) return;
@@ -729,4 +820,4 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-setPitch(0);
+renderPitch();

@@ -6,14 +6,74 @@ const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
 
-const PORT = Number(process.env.PORT) || 3000;
+function loadDotEnv(filePath) {
+  let text;
+  try {
+    text = fs.readFileSync(filePath, "utf8");
+  } catch {
+    return;
+  }
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq < 1) continue;
+    const key = line.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    if (process.env[key] !== undefined) continue;
+    let value = line.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
+}
+
+function envInt(name, fallback, min, max) {
+  const n = Number.parseInt(String(process.env[name] ?? ""), 10);
+  if (!Number.isFinite(n)) return fallback;
+  if (min !== undefined && n < min) return min;
+  if (max !== undefined && n > max) return max;
+  return n;
+}
+
+function envFloat(name, fallback, min, max) {
+  const n = Number.parseFloat(String(process.env[name] ?? ""));
+  if (!Number.isFinite(n)) return fallback;
+  if (min !== undefined && n < min) return min;
+  if (max !== undefined && n > max) return max;
+  return n;
+}
+
+function envStr(name, fallback) {
+  const value = process.env[name];
+  return value == null || value === "" ? fallback : value;
+}
+
+function envPath(name, fallback) {
+  const value = envStr(name, fallback);
+  return path.isAbsolute(value) ? value : path.join(__dirname, value);
+}
+
+loadDotEnv(path.join(__dirname, ".env"));
+
+const PORT = envInt("PORT", 3000, 1, 65535);
 const VIDEO_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
-const COOKIES_FROM_BROWSER = process.env.YTDLP_COOKIES_FROM_BROWSER || "chrome";
-const COOKIES_FILE = process.env.YTDLP_COOKIES || path.join(__dirname, "cookies.txt");
-const SEARCH_TIMEOUT_MS = 45_000;
-const DOWNLOAD_TIMEOUT_MS = 180_000;
-const PITCH_TIMEOUT_MS = 180_000;
-const CACHE_DIR = path.join(__dirname, "cache");
+const COOKIES_FROM_BROWSER = envStr("YTDLP_COOKIES_FROM_BROWSER", "chrome");
+const COOKIES_FILE = envPath("YTDLP_COOKIES", "cookies.txt");
+const CACHE_DIR = envPath("CACHE_DIR", "cache");
+const SEARCH_TIMEOUT_MS = envInt("SEARCH_TIMEOUT_MS", 45_000, 5_000, 300_000);
+const DOWNLOAD_TIMEOUT_MS = envInt("DOWNLOAD_TIMEOUT_MS", 180_000, 15_000, 600_000);
+const PITCH_TIMEOUT_MS = envInt("PITCH_TIMEOUT_MS", 180_000, 15_000, 600_000);
+const PITCH_LIMIT = envInt("PITCH_LIMIT", 12, 1, 24);
+const PREFETCH_PITCH_MIN = envInt("PREFETCH_PITCH_MIN", -3, -PITCH_LIMIT, 0);
+const PREFETCH_PITCH_MAX = envInt("PREFETCH_PITCH_MAX", 3, 0, PITCH_LIMIT);
+const PITCH_RENDER_CONCURRENCY = envInt("PITCH_RENDER_CONCURRENCY", 2, 1, 8);
+const PITCH_AUDIO_BITRATE = envStr("PITCH_AUDIO_BITRATE", "192k");
+const SHIFT_OUTPUT_GAIN = envFloat("SHIFT_OUTPUT_GAIN", 0.75, 0.05, 1);
 
 fs.mkdirSync(CACHE_DIR, { recursive: true });
 
@@ -343,7 +403,7 @@ function cachedAudioPath(videoId) {
 function parsePitch(raw) {
   const n = Number.parseInt(String(raw ?? "0"), 10);
   if (!Number.isFinite(n)) return 0;
-  return Math.max(-12, Math.min(12, n));
+  return Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, n));
 }
 
 function cachedPitchedPath(videoId, semitones) {
@@ -414,7 +474,7 @@ async function pitchShiftFile(src, dest, semitones) {
         "-c:a",
         "aac",
         "-b:a",
-        "192k",
+        PITCH_AUDIO_BITRATE,
         "-movflags",
         "+faststart",
         tmp,
@@ -463,6 +523,43 @@ async function ensurePitchedAudio(videoId, semitones, onProgress) {
     return dest;
   })().finally(() => inFlight.delete(key));
   return job.promise;
+}
+
+function prefetchPitchList() {
+  const list = [];
+  for (let n = 1; n <= PREFETCH_PITCH_MAX; n += 1) {
+    list.push(n);
+    if (-n >= PREFETCH_PITCH_MIN) list.push(-n);
+  }
+  return list;
+}
+
+async function mapPool(items, limit, worker) {
+  let index = 0;
+  async function run() {
+    while (index < items.length) {
+      const current = index;
+      index += 1;
+      await worker(items[current]);
+    }
+  }
+  const n = Math.min(Math.max(1, limit), items.length);
+  await Promise.all(Array.from({ length: n }, run));
+}
+
+async function ensurePitchBand(videoId, onProgress) {
+  await ensureAudioFile(videoId, onProgress);
+  const pitches = prefetchPitchList();
+  let done = 0;
+  await mapPool(pitches, PITCH_RENDER_CONCURRENCY, async (semitones) => {
+    await ensurePitchedAudio(videoId, semitones);
+    done += 1;
+    onProgress?.({
+      phase: "pitch",
+      percent: Math.round((done / pitches.length) * 100),
+      pitch: semitones,
+    });
+  });
 }
 
 async function ensureAudioFile(videoId, onProgress) {
@@ -545,6 +642,16 @@ function sendJsonError(res, error) {
   });
 }
 
+app.get("/api/config", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    prefetchMin: PREFETCH_PITCH_MIN,
+    prefetchMax: PREFETCH_PITCH_MAX,
+    pitchLimit: PITCH_LIMIT,
+    shiftOutputGain: SHIFT_OUTPUT_GAIN,
+  });
+});
+
 app.get("/api/health", (_req, res) => {
   let cookies = false;
   try {
@@ -619,6 +726,26 @@ app.get("/api/search", async (req, res) => {
     }
 
     res.json({ results });
+  } catch (error) {
+    sendJsonError(res, error);
+  }
+});
+
+app.get("/api/prefetch", async (req, res) => {
+  const videoId = parseVideoId(req.query.videoId);
+  if (!videoId) {
+    res.status(400).json({ error: "Invalid or missing videoId" });
+    return;
+  }
+  req.socket.setTimeout(DOWNLOAD_TIMEOUT_MS + PITCH_TIMEOUT_MS * 4 + 15_000);
+  try {
+    await ensurePitchBand(videoId);
+    res.json({
+      ok: true,
+      videoId,
+      from: PREFETCH_PITCH_MIN,
+      to: PREFETCH_PITCH_MAX,
+    });
   } catch (error) {
     sendJsonError(res, error);
   }
