@@ -6,6 +6,7 @@ const DRIFT_SECONDS = IS_IOS ? 0.85 : 0.4;
 const PITCH_LATENCY = 0;
 const SYNC_MS = IS_IOS ? 600 : 320;
 let SHIFT_OUTPUT_GAIN = 0.75;
+let PREFETCH_PITCH = true;
 let PREFETCH_MIN = -3;
 let PREFETCH_MAX = 3;
 let PITCH_LIMIT = 12;
@@ -50,6 +51,7 @@ async function loadServerConfig() {
     if (!response.ok) return;
     const data = await response.json();
     if (Number.isFinite(data.shiftOutputGain)) SHIFT_OUTPUT_GAIN = data.shiftOutputGain;
+    if (typeof data.prefetch === "boolean") PREFETCH_PITCH = data.prefetch;
     if (Number.isFinite(data.prefetchMin)) PREFETCH_MIN = data.prefetchMin;
     if (Number.isFinite(data.prefetchMax)) PREFETCH_MAX = data.prefetchMax;
     if (Number.isFinite(data.pitchLimit)) PITCH_LIMIT = data.pitchLimit;
@@ -122,6 +124,10 @@ function showPitchControls() {
 async function enablePitchControls() {
   if (!currentVideoId || pitchControlsReady) return;
   await configReady;
+  if (!PREFETCH_PITCH) {
+    showPitchControls();
+    return;
+  }
   const token = loadToken;
   abortPrefetch();
   prefetchAbort = new AbortController();

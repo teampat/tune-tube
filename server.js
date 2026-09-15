@@ -2,6 +2,7 @@ const { execFile, spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { once } = require("events");
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
@@ -53,6 +54,14 @@ function envStr(name, fallback) {
   return value == null || value === "" ? fallback : value;
 }
 
+function envBool(name, fallback) {
+  const raw = String(process.env[name] ?? "").trim().toLowerCase();
+  if (!raw) return fallback;
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  return fallback;
+}
+
 function envPath(name, fallback) {
   const value = envStr(name, fallback);
   return path.isAbsolute(value) ? value : path.join(__dirname, value);
@@ -70,6 +79,7 @@ const SEARCH_RESULT_LIMIT = envInt("SEARCH_RESULT_LIMIT", 10, 1, 20);
 const DOWNLOAD_TIMEOUT_MS = envInt("DOWNLOAD_TIMEOUT_MS", 180_000, 15_000, 600_000);
 const PITCH_TIMEOUT_MS = envInt("PITCH_TIMEOUT_MS", 180_000, 15_000, 600_000);
 const PITCH_LIMIT = envInt("PITCH_LIMIT", 12, 1, 24);
+const PREFETCH_PITCH = envBool("PREFETCH_PITCH", true);
 const PREFETCH_PITCH_MIN = envInt("PREFETCH_PITCH_MIN", -3, -PITCH_LIMIT, 0);
 const PREFETCH_PITCH_MAX = envInt("PREFETCH_PITCH_MAX", 3, 0, PITCH_LIMIT);
 const PITCH_RENDER_CONCURRENCY = envInt("PITCH_RENDER_CONCURRENCY", 4, 1, 8);
@@ -410,7 +420,7 @@ function parsePitch(raw) {
 function cachedPitchedPath(videoId, semitones) {
   if (!semitones) return cachedAudioPath(videoId);
   const tag = semitones > 0 ? `p${semitones}` : `m${Math.abs(semitones)}`;
-  return path.join(CACHE_DIR, `${videoId}.${tag}.m4a`);
+  return path.join(CACHE_DIR, `${videoId}.${tag}.mp3`);
 }
 
 function cachedPcmPath(videoId) {
@@ -472,12 +482,44 @@ function atempoChain(tempo) {
   return parts.join(",");
 }
 
-async function pitchShiftFile(src, dest, semitones) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function fileSize(filePath) {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return 0;
+    return fs.statSync(filePath).size;
+  } catch {
+    return 0;
+  }
+}
+
+function pitchedFileReady(filePath) {
+  return fileSize(filePath) > 1024;
+}
+
+function bytesForTime(seconds) {
+  const kbps = Number.parseInt(String(PITCH_AUDIO_BITRATE), 10);
+  const bitsPerSec = (Number.isFinite(kbps) ? kbps : 192) * 1000;
+  return Math.max(24_000, Math.ceil(Math.max(0, seconds) * (bitsPerSec / 8)));
+}
+
+async function waitForFileSize(filePath, minBytes, timeoutMs, isDead) {
+  const start = Date.now();
+  while (fileSize(filePath) < minBytes) {
+    if (isDead?.()) throw new Error("ปรับคีย์ไม่สำเร็จ");
+    if (Date.now() - start > timeoutMs) throw new Error("หมดเวลารอเสียง");
+    await sleep(40);
+  }
+}
+
+async function pitchShiftFile(src, dest, semitones, tmp) {
   const ratio = 2 ** (semitones / 12);
   const rate = (44100 * ratio).toFixed(6);
   const pitched = `asetrate=${rate},aresample=44100,${atempoChain(1 / ratio)}`;
   const filter = /\.wav$/i.test(src) ? pitched : `aresample=44100,${pitched}`;
-  const tmp = `${dest}.${process.pid}.tmp.m4a`;
+  const out = tmp || `${dest}.${process.pid}.tmp.mp3`;
   try {
     await spawnFfmpeg(
       [
@@ -493,21 +535,21 @@ async function pitchShiftFile(src, dest, semitones) {
         "-filter:a",
         filter,
         "-c:a",
-        "aac",
-        "-aac_coder",
-        "fast",
+        "libmp3lame",
         "-b:a",
         PITCH_AUDIO_BITRATE,
-        "-movflags",
-        "+faststart",
-        tmp,
+        "-flush_packets",
+        "1",
+        "-f",
+        "mp3",
+        out,
       ],
       PITCH_TIMEOUT_MS,
     );
-    fs.renameSync(tmp, dest);
+    fs.renameSync(out, dest);
   } catch (error) {
     try {
-      fs.unlinkSync(tmp);
+      fs.unlinkSync(out);
     } catch {
       // ignore leftover temp
     }
@@ -515,89 +557,132 @@ async function pitchShiftFile(src, dest, semitones) {
   }
 }
 
-async function ensurePcmWav(videoId, onProgress) {
-  const source = await ensureAudioFile(videoId, onProgress);
-  const existing = existingPcmPath(videoId);
-  if (existing) return existing;
-
-  const dest = cachedPcmPath(videoId);
-  const key = `pcm:${videoId}`;
-  const inflight = inFlight.get(key);
-  if (inflight) return inflight.promise;
-
-  const job = { listeners: new Set(), progress: { phase: "pcm" }, promise: null };
-  inFlight.set(key, job);
-  job.promise = (async () => {
-    const tmp = `${dest}.${process.pid}.tmp.wav`;
-    try {
-      await spawnFfmpeg(
-        [
-          "-y",
-          "-hide_banner",
-          "-loglevel",
-          "error",
-          "-threads",
-          "0",
-          "-i",
-          source,
-          "-vn",
-          "-ac",
-          "2",
-          "-ar",
-          "44100",
-          "-c:a",
-          "pcm_s16le",
-          tmp,
-        ],
-        PITCH_TIMEOUT_MS,
-      );
-      fs.renameSync(tmp, dest);
-      if (!fs.existsSync(dest) || fs.statSync(dest).size < 1024) {
-        throw new Error("แปลงไฟล์เสียงไม่สำเร็จ");
-      }
-      return dest;
-    } catch (error) {
-      try {
-        fs.unlinkSync(tmp);
-      } catch {
-        // ignore leftover temp
-      }
-      return source;
-    }
-  })().finally(() => inFlight.delete(key));
-  return job.promise;
-}
-
-async function renderPitchedAudio(videoId, semitones, source, onProgress) {
+function beginPitchedAudio(videoId, semitones, source, onProgress) {
   const n = parsePitch(semitones);
-  if (n === 0) return source;
+  if (n === 0) {
+    return {
+      dest: source,
+      tmp: source,
+      failed: false,
+      promise: Promise.resolve(source),
+    };
+  }
 
   const dest = cachedPitchedPath(videoId, n);
-  if (fs.existsSync(dest) && fs.statSync(dest).size > 1024) {
-    onProgress?.({ phase: "done", percent: 100 });
-    return dest;
+  if (pitchedFileReady(dest)) {
+    return {
+      dest,
+      tmp: dest,
+      failed: false,
+      promise: Promise.resolve(dest),
+    };
   }
 
   const key = `pitch:${videoId}:${n}`;
   const existing = inFlight.get(key);
   if (existing) {
     if (onProgress) existing.listeners?.add(onProgress);
-    return existing.promise;
+    return existing;
   }
 
-  const job = { listeners: new Set(), progress: { phase: "pitch", percent: 80 }, promise: null };
+  const tmp = `${dest}.${process.pid}.${Date.now()}.tmp.mp3`;
+  const job = {
+    dest,
+    tmp,
+    failed: false,
+    listeners: new Set(),
+    progress: { phase: "pitch", percent: 80 },
+    promise: null,
+  };
   if (onProgress) job.listeners.add(onProgress);
   inFlight.set(key, job);
   onProgress?.({ phase: "pitch", percent: 80 });
   job.promise = (async () => {
-    await pitchShiftFile(source, dest, n);
-    if (!fs.existsSync(dest) || fs.statSync(dest).size < 1024) {
-      throw new Error("ปรับคีย์ไม่สำเร็จ");
+    try {
+      await pitchShiftFile(source, dest, n, tmp);
+      if (!pitchedFileReady(dest)) throw new Error("ปรับคีย์ไม่สำเร็จ");
+      onProgress?.({ phase: "done", percent: 100 });
+      return dest;
+    } catch (error) {
+      job.failed = true;
+      throw error;
     }
-    onProgress?.({ phase: "done", percent: 100 });
-    return dest;
   })().finally(() => inFlight.delete(key));
-  return job.promise;
+  return job;
+}
+
+async function waitUntilPitchedPlayable(job, minBytes) {
+  if (pitchedFileReady(job.dest)) return job.dest;
+  await Promise.race([
+    waitForFileSize(job.tmp, minBytes, 60_000, () => job.failed),
+    job.promise,
+  ]);
+  if (job.failed) throw new Error("ปรับคีย์ไม่สำเร็จ");
+  return job.dest;
+}
+
+async function pipeGrowingFile(job, req, res) {
+  res.status(200);
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Content-Type", "audio/mpeg");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Accept-Ranges", "none");
+  if (typeof res.flushHeaders === "function") res.flushHeaders();
+
+  let pos = 0;
+  let stopped = false;
+  req.on("close", () => {
+    stopped = true;
+  });
+
+  const readFrom = () => (fileSize(job.tmp) > 0 ? job.tmp : job.dest);
+
+  while (!stopped) {
+    const filePath = readFrom();
+    const size = fileSize(filePath);
+    if (size > pos) {
+      const length = size - pos;
+      const chunk = Buffer.alloc(length);
+      const fd = fs.openSync(filePath, "r");
+      try {
+        fs.readSync(fd, chunk, 0, length, pos);
+      } finally {
+        fs.closeSync(fd);
+      }
+      pos += length;
+      if (!res.write(chunk)) await once(res, "drain");
+      continue;
+    }
+
+    if (job.failed) throw new Error("ปรับคีย์ไม่สำเร็จ");
+
+    const state = await Promise.race([
+      job.promise.then(() => "done").catch(() => "fail"),
+      sleep(40).then(() => "wait"),
+    ]);
+    if (state === "fail") throw new Error("ปรับคีย์ไม่สำเร็จ");
+    if (state === "done") {
+      const finalPath = pitchedFileReady(job.dest) ? job.dest : job.tmp;
+      const rest = fileSize(finalPath);
+      if (rest > pos) {
+        const length = rest - pos;
+        const chunk = Buffer.alloc(length);
+        const fd = fs.openSync(finalPath, "r");
+        try {
+          fs.readSync(fd, chunk, 0, length, pos);
+        } finally {
+          fs.closeSync(fd);
+        }
+        res.write(chunk);
+      }
+      res.end();
+      return;
+    }
+  }
+}
+
+async function renderPitchedAudio(videoId, semitones, source, onProgress) {
+  return beginPitchedAudio(videoId, semitones, source, onProgress).promise;
 }
 
 async function ensurePitchedAudio(videoId, semitones, onProgress) {
@@ -727,6 +812,7 @@ function sendJsonError(res, error) {
 app.get("/api/config", (_req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({
+    prefetch: PREFETCH_PITCH,
     prefetchMin: PREFETCH_PITCH_MIN,
     prefetchMax: PREFETCH_PITCH_MAX,
     pitchLimit: PITCH_LIMIT,
@@ -822,10 +908,19 @@ app.get("/api/prefetch", async (req, res) => {
   }
   req.socket.setTimeout(DOWNLOAD_TIMEOUT_MS + PITCH_TIMEOUT_MS * 4 + 15_000);
   try {
+    if (!PREFETCH_PITCH) {
+      res.json({
+        ok: true,
+        videoId,
+        prefetch: false,
+      });
+      return;
+    }
     await ensurePitchBand(videoId);
     res.json({
       ok: true,
       videoId,
+      prefetch: true,
       from: PREFETCH_PITCH_MIN,
       to: PREFETCH_PITCH_MAX,
     });
