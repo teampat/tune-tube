@@ -383,6 +383,7 @@ body:has(#stage:not([hidden])) {
   font-size: 15px;
   font-weight: 600;
   white-space: nowrap;
+  position: relative;
 }
 
 .key-enable:hover:not(:disabled) {
@@ -401,6 +402,10 @@ body:has(#stage:not([hidden])) {
   height: 18px;
   margin: 0;
   flex: 0 0 auto;
+}
+
+.key-enable.is-loading .key-enable-spinner {
+  display: block !important;
 }
 
 .pitch-btn {

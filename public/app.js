@@ -98,23 +98,25 @@ function abortPrefetch() {
   prefetchAbort = null;
 }
 
+function setKeyEnableLoading(loading) {
+  keyEnable.classList.toggle("is-loading", loading);
+  keyEnable.disabled = loading;
+  keyEnable.setAttribute("aria-busy", loading ? "true" : "false");
+  keySpinner.hidden = !loading;
+  keyEnableLabel.textContent = loading ? "กำลังเตรียมคีย์..." : "เปลี่ยนคีย์";
+}
+
 function resetKeyUi() {
   pitchControlsReady = false;
   pitchCard.hidden = true;
-  keyEnable.disabled = false;
-  keyEnable.classList.remove("is-loading");
-  keySpinner.hidden = true;
-  keyEnableLabel.textContent = "เปลี่ยนคีย์";
+  setKeyEnableLoading(false);
   keyEnable.hidden = !currentVideoId;
 }
 
 function showPitchControls() {
   pitchControlsReady = true;
+  setKeyEnableLoading(false);
   keyEnable.hidden = true;
-  keyEnable.disabled = false;
-  keyEnable.classList.remove("is-loading");
-  keySpinner.hidden = true;
-  keyEnableLabel.textContent = "เปลี่ยนคีย์";
   pitchCard.hidden = false;
 }
 
@@ -124,10 +126,7 @@ async function enablePitchControls() {
   const token = loadToken;
   abortPrefetch();
   prefetchAbort = new AbortController();
-  keyEnable.disabled = true;
-  keyEnable.classList.add("is-loading");
-  keySpinner.hidden = false;
-  keyEnableLabel.textContent = "กำลังเตรียมคีย์...";
+  setKeyEnableLoading(true);
   setStatus(`กำลังเตรียมคีย์ ${PREFETCH_MIN} ถึง +${PREFETCH_MAX}`);
 
   try {
@@ -142,10 +141,7 @@ async function enablePitchControls() {
     setStatus("");
   } catch (error) {
     if (error.name === "AbortError" || token !== loadToken) return;
-    keyEnable.disabled = false;
-    keyEnable.classList.remove("is-loading");
-    keySpinner.hidden = true;
-    keyEnableLabel.textContent = "เปลี่ยนคีย์";
+    setKeyEnableLoading(false);
     setStatus(error.message || "เตรียมคีย์ไม่สำเร็จ", true);
   }
 }
