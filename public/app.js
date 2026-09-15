@@ -45,6 +45,8 @@ let previewGain = null;
 let previewConnected = false;
 let previewSourceRate = 0;
 let decodedBuffers = new Map();
+let decodeJobs = new Map();
+let iosWarmNode = null;
 
 async function loadServerConfig() {
   try {
@@ -308,10 +310,26 @@ function kickHtmlAudio() {
   }
 }
 
+function warmIosGraph() {
+  if (!IS_IOS) return;
+  const ctx = getAudioCtx();
+  if (iosWarmNode) return;
+  try {
+    iosWarmNode = ctx.createScriptProcessor(4096, 1, 1);
+    iosWarmNode.onaudioprocess = (event) => {
+      event.outputBuffer.getChannelData(0).fill(0);
+    };
+    iosWarmNode.connect(ctx.destination);
+  } catch {
+    iosWarmNode = null;
+  }
+}
+
 function unlockAudio() {
   const ctx = getAudioCtx();
   ctx.resume().catch(() => {});
   kickHtmlAudio();
+  warmIosGraph();
   if (ctx.state === "running") return;
   try {
     const src = ctx.createBufferSource();
@@ -414,16 +432,22 @@ async function matchContextRate(buffer) {
 
 async function decodeOriginal(videoId) {
   if (decodedBuffers.has(videoId)) return decodedBuffers.get(videoId);
-  const response = await fetch(`/api/stream?videoId=${encodeURIComponent(videoId)}`);
-  if (!response.ok) {
-    throw new Error(await readApiError(response, "โหลดเสียงต้นฉบับไม่สำเร็จ"));
-  }
-  const bytes = await response.arrayBuffer();
-  const copy = bytes.slice(0);
-  const decoded = await getAudioCtx().decodeAudioData(copy);
-  const buffer = await matchContextRate(decoded);
-  decodedBuffers.set(videoId, buffer);
-  return buffer;
+  const pending = decodeJobs.get(videoId);
+  if (pending) return pending;
+  const job = (async () => {
+    const response = await fetch(`/api/stream?videoId=${encodeURIComponent(videoId)}`);
+    if (!response.ok) {
+      throw new Error(await readApiError(response, "โหลดเสียงต้นฉบับไม่สำเร็จ"));
+    }
+    const bytes = await response.arrayBuffer();
+    const copy = bytes.slice(0);
+    const decoded = await getAudioCtx().decodeAudioData(copy);
+    const buffer = await matchContextRate(decoded);
+    decodedBuffers.set(videoId, buffer);
+    return buffer;
+  })().finally(() => decodeJobs.delete(videoId));
+  decodeJobs.set(videoId, job);
+  return job;
 }
 
 function startPreview(buffer, semitones, _at) {
@@ -499,7 +523,16 @@ function setPitch(semitones) {
     }
     return;
   }
+  if (startShiftedFromCache()) return;
   ensureShiftedPlayback();
+}
+
+function startShiftedFromCache() {
+  const buffer = decodedBuffers.get(currentVideoId);
+  if (!buffer) return false;
+  startPreview(buffer, currentPitch, currentYtTime());
+  playShiftedAudio();
+  return true;
 }
 
 function syncAudioTime(force = false) {
@@ -512,20 +545,17 @@ function syncAudioTime(force = false) {
   noteYtTime();
 }
 
-async function playShiftedAudio() {
-  const token = loadToken;
+function playShiftedAudio() {
   keepVideoSilent();
   unlockAudio();
   snapToOriginal();
-  await getAudioCtx().resume();
+  getAudioCtx().resume().catch(() => {});
   resumePreview();
-
   try {
     ytPlayer?.playVideo();
   } catch {
     // iframe may still be cueing
   }
-  if (loadToken !== token || currentPitch === 0) return;
 }
 
 async function ensureShiftedPlayback() {
@@ -553,7 +583,7 @@ async function ensureShiftedPlayback() {
     const buffer = await decodeOriginal(currentVideoId);
     if (job !== pitchJob || currentPitch !== wanted || currentPitch === 0) return;
     startPreview(buffer, currentPitch, currentYtTime());
-    await playShiftedAudio();
+    playShiftedAudio();
     noteYtTime();
     if (job === pitchJob) setStatus("");
   } catch (error) {
@@ -738,13 +768,15 @@ async function loadVideo(videoId) {
   lastKnownYtTime = 0;
   lastYtWall = 0;
   renderPitch();
-  audioEl.pause();
-  try {
-    audioEl.removeAttribute("src");
-    delete audioEl.dataset.streamKey;
-    audioEl.load();
-  } catch {
-    // ignore
+  if (!(IS_IOS && audioEl.dataset.streamKey === "silent")) {
+    audioEl.pause();
+    try {
+      audioEl.removeAttribute("src");
+      delete audioEl.dataset.streamKey;
+      audioEl.load();
+    } catch {
+      // ignore
+    }
   }
   hideLoading();
   clearResults();
@@ -752,7 +784,9 @@ async function loadVideo(videoId) {
   stage.hidden = false;
   setStatus("");
   loadBtn.disabled = true;
+  unlockAudio();
   fetch(`/api/prepare?videoId=${encodeURIComponent(videoId)}`).catch(() => {});
+  decodeOriginal(videoId).catch(() => {});
 
   try {
     await loadYouTubeApi();
@@ -777,6 +811,7 @@ form.addEventListener("submit", async (event) => {
 
   const videoId = parseVideoId(query);
   stopPlayback();
+  unlockAudio();
   loadBtn.disabled = true;
 
   try {
@@ -804,6 +839,7 @@ resultsEl.addEventListener("click", async (event) => {
   if (!button?.dataset.videoId) return;
 
   stopPlayback();
+  unlockAudio();
   loadBtn.disabled = true;
   try {
     await loadVideo(button.dataset.videoId);
