@@ -84,8 +84,9 @@ const PREFETCH_PITCH_MAX = envInt("PREFETCH_PITCH_MAX", 3, 0, PITCH_LIMIT);
 const PITCH_RENDER_CONCURRENCY = envInt("PITCH_RENDER_CONCURRENCY", 4, 1, 8);
 const PITCH_AUDIO_BITRATE = envStr("PITCH_AUDIO_BITRATE", "192k");
 const SHIFT_OUTPUT_GAIN = envFloat("SHIFT_OUTPUT_GAIN", 0.75, 0.05, 1);
-const PITCH_EXT = "mp3";
-const PITCH_MIME = "audio/mpeg";
+const PITCH_CODEC = process.platform === "darwin" ? "aac_at" : "aac";
+const PITCH_EXT = "m4a";
+const PITCH_MIME = "audio/mp4";
 
 fs.mkdirSync(CACHE_DIR, { recursive: true });
 
@@ -520,11 +521,13 @@ async function pitchShiftFile(src, dest, semitones, tmp) {
         "-filter:a",
         pitchAudioFilter(src, semitones),
         "-c:a",
-        "libmp3lame",
+        PITCH_CODEC,
         "-b:a",
         PITCH_AUDIO_BITRATE,
+        "-movflags",
+        "+faststart",
         "-f",
-        "mp3",
+        "mp4",
         out,
       ],
       PITCH_TIMEOUT_MS,
@@ -594,82 +597,12 @@ function beginPitchedAudio(videoId, semitones, source, onProgress) {
   return job;
 }
 
-function sendPitchedFile(res, filePath, cacheable) {
+function sendPitchedFile(res, filePath) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Accept-Ranges", "bytes");
-  res.setHeader("Cache-Control", cacheable ? "public, max-age=3600" : "no-store");
+  res.setHeader("Cache-Control", "public, max-age=3600");
   res.sendFile(filePath, {
     headers: { "Content-Type": PITCH_MIME },
-  });
-}
-
-function pipeLivePitchedAudio(req, res, source, semitones, fromTime) {
-  const start = Math.max(0, Number(fromTime) || 0);
-  const args = [
-    "-hide_banner",
-    "-loglevel",
-    "error",
-    "-nostdin",
-    "-ss",
-    start.toFixed(3),
-    "-i",
-    source,
-    "-vn",
-    "-filter:a",
-    pitchAudioFilter(source, semitones),
-    "-c:a",
-    "libmp3lame",
-    "-b:a",
-    PITCH_AUDIO_BITRATE,
-    "-flush_packets",
-    "1",
-    "-write_xing",
-    "0",
-    "-id3v2_version",
-    "0",
-    "-f",
-    "mp3",
-    "pipe:1",
-  ];
-
-  return new Promise((resolve, reject) => {
-    const child = spawn("ffmpeg", args);
-    let started = false;
-    let log = "";
-    const stop = () => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // already exited
-      }
-    };
-    const fail = (error) => {
-      stop();
-      if (!started && !res.headersSent) reject(error);
-      else resolve();
-    };
-
-    req.on("close", stop);
-    child.stderr.on("data", (buf) => {
-      log += String(buf);
-      if (log.length > 8192) log = log.slice(-4096);
-    });
-    child.stdout.once("data", (chunk) => {
-      started = true;
-      res.status(200);
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Content-Type", PITCH_MIME);
-      res.setHeader("Cache-Control", "no-store");
-      res.setHeader("Accept-Ranges", "none");
-      if (typeof res.flushHeaders === "function") res.flushHeaders();
-      res.write(chunk);
-      child.stdout.pipe(res);
-    });
-    child.on("error", (error) => fail(error));
-    child.on("close", (code) => {
-      if (!started) fail(new Error(log.trim() || `ffmpeg exited ${code}`));
-      else resolve();
-    });
   });
 }
 
@@ -935,16 +868,15 @@ app.get("/api/prepare", async (req, res) => {
     try {
       const source = await ensureAudioFile(videoId);
       if (pitch === 0) {
-        res.json({ ok: true, videoId, pitch, pitched: false, seekable: false });
+        res.json({ ok: true, videoId, pitch, pitched: false });
         return;
       }
-      beginPitchedAudio(videoId, pitch, existingPcmPath(videoId) || source);
+      await beginPitchedAudio(videoId, pitch, existingPcmPath(videoId) || source).promise;
       res.json({
         ok: true,
         videoId,
         pitch,
         pitched: true,
-        seekable: pitchedFileReady(cachedPitchedPath(videoId, pitch)),
       });
     } catch (error) {
       sendJsonError(res, error);
@@ -974,7 +906,7 @@ app.get("/api/prepare", async (req, res) => {
       if (!closed) writeSse(res, progress);
     });
     if (pitch !== 0) {
-      beginPitchedAudio(videoId, pitch, existingPcmPath(videoId) || source);
+      await beginPitchedAudio(videoId, pitch, existingPcmPath(videoId) || source).promise;
     }
     if (!closed) {
       writeSse(res, { phase: "done", percent: 100 });
@@ -1016,16 +948,9 @@ app.get("/api/stream", async (req, res) => {
       return;
     }
 
-    const dest = cachedPitchedPath(videoId, pitch);
-    const at = Number(req.query.at) || 0;
-    if (pitchedFileReady(dest)) {
-      sendPitchedFile(res, dest, true);
-      return;
-    }
-
     const source = await ensureAudioFile(videoId);
-    beginPitchedAudio(videoId, pitch, existingPcmPath(videoId) || source);
-    await pipeLivePitchedAudio(req, res, existingPcmPath(videoId) || source, pitch, at);
+    const filePath = await beginPitchedAudio(videoId, pitch, existingPcmPath(videoId) || source).promise;
+    sendPitchedFile(res, filePath);
   } catch (error) {
     if (!res.headersSent) sendJsonError(res, error);
     else res.destroy();
@@ -1050,7 +975,7 @@ function lanUrls() {
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`TuneTube running at http://localhost:${PORT}`);
-  console.log(`pitch encoder: libmp3lame ${PITCH_AUDIO_BITRATE}`);
+  console.log(`pitch encoder: ${PITCH_CODEC} ${PITCH_AUDIO_BITRATE} m4a`);
   for (const url of lanUrls()) {
     console.log(`tablet: ${url}`);
   }

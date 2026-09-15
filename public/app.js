@@ -2,7 +2,7 @@ const VIDEO_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
 const IS_IOS =
   /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-const DRIFT_SECONDS = IS_IOS ? 0.85 : 0.4;
+const DRIFT_SECONDS = IS_IOS ? 0.55 : 0.3;
 const PITCH_LATENCY = 0;
 const SYNC_MS = IS_IOS ? 600 : 320;
 let SHIFT_OUTPUT_GAIN = 0.75;
@@ -37,8 +37,6 @@ let ytError = null;
 let prepareAbort = null;
 let shiftLoading = false;
 let pitchJob = 0;
-let pitchSeekable = false;
-let streamOrigin = 0;
 
 async function loadServerConfig() {
   try {
@@ -272,15 +270,11 @@ function currentYtTime() {
 function streamParams(videoId) {
   const params = new URLSearchParams({ videoId });
   if (currentPitch) params.set("pitch", String(currentPitch));
-  if (!pitchSeekable && streamOrigin > 0.05) {
-    params.set("at", streamOrigin.toFixed(3));
-  }
   return params;
 }
 
 function streamKey(videoId) {
-  const origin = pitchSeekable ? "full" : streamOrigin.toFixed(2);
-  return `${videoId}:${currentPitch}:${origin}`;
+  return `${videoId}:${currentPitch}`;
 }
 
 function attachAudio(videoId) {
@@ -302,8 +296,6 @@ function restoreYoutubeAudio() {
   abortPrepare();
   shiftLoading = false;
   audioReady = false;
-  pitchSeekable = false;
-  streamOrigin = 0;
   audioEl.pause();
   try {
     audioEl.removeAttribute("src");
@@ -340,30 +332,43 @@ function setPitch(semitones) {
 }
 
 function targetAudioTime() {
-  return Math.max(0, currentYtTime() - streamOrigin + PITCH_LATENCY);
+  const t = Math.max(0, currentYtTime() + PITCH_LATENCY);
+  const dur = audioEl.duration;
+  if (Number.isFinite(dur) && dur > 0.2) return Math.min(t, dur - 0.05);
+  return t;
 }
 
-function audioCanSeek() {
-  if (pitchSeekable) return true;
-  try {
-    if (audioEl.seekable && audioEl.seekable.length > 0) {
-      return audioEl.seekable.end(audioEl.seekable.length - 1) > 1;
+function waitYtPaused(timeoutMs = 700) {
+  return new Promise((resolve) => {
+    try {
+      ytPlayer?.pauseVideo();
+    } catch {
+      // iframe may not be ready
     }
-  } catch {
-    // growing live streams often have no seekable range
-  }
-  return Number.isFinite(audioEl.duration) && audioEl.duration > 1;
+    const start = Date.now();
+    const tick = () => {
+      const state = ytPlayer?.getPlayerState?.();
+      const frozen =
+        state === window.YT?.PlayerState?.PAUSED ||
+        state === window.YT?.PlayerState?.CUED ||
+        state === window.YT?.PlayerState?.ENDED ||
+        state === -1;
+      if (frozen || !ytPlayer || Date.now() - start >= timeoutMs) {
+        resolve(currentYtTime());
+        return;
+      }
+      window.setTimeout(tick, 40);
+    };
+    tick();
+  });
 }
 
 function syncAudioTime(force = false) {
-  if (!audioReady || !ytPlayer || !audioCanSeek()) return;
-  let target = targetAudioTime();
-  if (Number.isFinite(audioEl.duration) && audioEl.duration > 1) {
-    target = Math.min(target, Math.max(0, audioEl.duration - 0.05));
-  }
+  if (!audioReady || !ytPlayer) return;
+  const target = targetAudioTime();
   const drift = Math.abs(audioEl.currentTime - target);
   if (!force && drift <= DRIFT_SECONDS) return;
-  if (IS_IOS && !force && !audioEl.paused && drift < 1.25) return;
+  if (IS_IOS && !force && !audioEl.paused && drift < 1.1) return;
 
   syncing = true;
   try {
@@ -383,7 +388,7 @@ async function playShiftedAudio() {
   audioEl.muted = false;
   audioEl.volume = SHIFT_OUTPUT_GAIN;
   if (!hasAudioSource()) attachAudio(currentVideoId);
-  if (pitchSeekable) syncAudioTime(true);
+  syncAudioTime(true);
 
   try {
     ytPlayer?.playVideo();
@@ -422,17 +427,12 @@ async function ensureShiftedPlayback() {
   shiftLoading = true;
   audioReady = false;
   showLoading();
-  setStatus("กำลังปรับคีย์...");
-  try {
-    ytPlayer?.pauseVideo();
-  } catch {
-    // freeze YouTube time while the pitched stream starts
-  }
+  setStatus("กำลังแปลงทั้งเพลง...");
+  await waitYtPaused();
 
   try {
     await prepareAudio(currentVideoId);
     if (job !== pitchJob || currentPitch !== wanted || currentPitch === 0) return;
-    streamOrigin = pitchSeekable ? 0 : currentYtTime();
     attachAudio(currentVideoId);
     await waitForAudioReady();
     if (job !== pitchJob || currentPitch !== wanted || currentPitch === 0) return;
@@ -465,8 +465,6 @@ function stopPlayback() {
   audioReady = false;
   ytError = null;
   shiftLoading = false;
-  pitchSeekable = false;
-  streamOrigin = 0;
   abortPrepare();
   currentVideoId = null;
   hideUnlock();
@@ -610,8 +608,7 @@ async function prepareAudio(videoId) {
   if (!response.ok) {
     throw new Error(await readApiError(response, "เตรียมสตรีมเสียงไม่สำเร็จ"));
   }
-  const data = await response.json().catch(() => ({}));
-  pitchSeekable = Boolean(data.seekable);
+  await response.json().catch(() => ({}));
 }
 
 function waitForAudioReady() {
@@ -626,7 +623,7 @@ function waitForAudioReady() {
       reject(new Error("หมดเวลารอสตรีมเสียง จากเซิร์ฟเวอร์"));
     }, 180_000);
     const onReady = () => {
-      if (audioEl.readyState >= 1) succeed();
+      if (audioEl.readyState >= 1 && Number.isFinite(audioEl.duration) && audioEl.duration > 0) succeed();
     };
     const onError = () => {
       cleanup();
@@ -655,8 +652,6 @@ async function loadVideo(videoId) {
   ytError = null;
   audioReady = false;
   shiftLoading = false;
-  pitchSeekable = false;
-  streamOrigin = 0;
   abortPrepare();
   currentPitch = 0;
   renderPitch();
@@ -793,12 +788,6 @@ setInterval(() => {
 
   const jumped = Math.abs(ytTime - lastKnownYtTime) > 1.2;
   lastKnownYtTime = ytTime;
-  if (jumped && !pitchSeekable && !shiftLoading && isYtPlaying()) {
-    delete audioEl.dataset.streamKey;
-    audioReady = false;
-    ensureShiftedPlayback();
-    return;
-  }
   if (isYtPlaying() && !audioEl.paused) syncAudioTime(jumped);
 }, SYNC_MS);
 
