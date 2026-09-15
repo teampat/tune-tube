@@ -3,9 +3,10 @@ const IS_IOS =
   /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const DRIFT_SECONDS = IS_IOS ? 0.85 : 0.4;
-const PITCH_LATENCY = IS_IOS ? 0.16 : 0.1;
-const PITCH_WINDOW = IS_IOS ? 0.18 : 0.12;
+const PITCH_LATENCY = 0.04;
+const PITCH_WINDOW = 0.06;
 const SYNC_MS = IS_IOS ? 600 : 320;
+const SHIFT_OUTPUT_GAIN = 0.85;
 
 const form = document.getElementById("load-form");
 const videoInput = document.getElementById("video-input");
@@ -199,10 +200,14 @@ function loadYouTubeApi() {
 }
 
 function keepVideoSilent() {
-  if (!isShiftMode()) return;
+  if (currentPitch === 0) return;
   if (!ytPlayer || typeof ytPlayer.mute !== "function") return;
-  ytPlayer.mute();
-  ytPlayer.setVolume(0);
+  try {
+    ytPlayer.mute();
+    ytPlayer.setVolume(0);
+  } catch {
+    // iframe may not be ready
+  }
 }
 
 function unmuteVideo() {
@@ -238,7 +243,7 @@ function warmAudioContext() {
   try {
     const ctx = Tone.getContext();
     ctx.resume();
-    if (IS_IOS) ctx.lookAhead = 0.2;
+    if (IS_IOS) ctx.lookAhead = 0.1;
   } catch {
     // AudioContext may not exist yet
   }
@@ -301,6 +306,7 @@ function setPitch(semitones) {
     return;
   }
 
+  keepVideoSilent();
   warmAudioContext();
   ensureShiftedPlayback();
 }
@@ -326,7 +332,7 @@ async function ensureAudioGraph() {
   if (ctx.state !== "running") {
     throw new Error("เบราว์เซอร์ยังบล็อกเสียง ลองกดอีกครั้ง");
   }
-  if (IS_IOS) ctx.lookAhead = 0.2;
+  if (IS_IOS) ctx.lookAhead = 0.1;
 
   try {
     const source = ctx.rawContext.createMediaElementSource(audioEl);
@@ -335,7 +341,12 @@ async function ensureAudioGraph() {
       windowSize: PITCH_WINDOW,
       delayTime: 0,
       feedback: 0,
-    }).toDestination();
+      wet: 1,
+    });
+    const shiftGain = new Tone.Gain(SHIFT_OUTPUT_GAIN).toDestination();
+    pitchShift.connect(shiftGain);
+    pitchShift.feedback.value = 0;
+    pitchShift.wet.value = 1;
     Tone.connect(source, pitchShift);
     audioGraphReady = true;
   } catch (error) {
