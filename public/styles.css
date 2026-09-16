@@ -12,10 +12,21 @@
   --radius: 22px;
   --chrome-inner: 36px;
   --chrome-pad: 2px;
+  --font-mark: 0.8125rem;
+  --font-ui: 0.9375rem;
+  --font-body: 1rem;
+  --font-status: clamp(0.8125rem, 0.68rem + 0.5vw, 1rem);
+  --font-pitch-btn: clamp(1.5rem, 1.2rem + 1vw, 1.75rem);
+  --font-pitch-label: clamp(0.9375rem, 0.82rem + 0.4vw, 1.125rem);
+  --font-semitone: clamp(1.25rem, 1rem + 0.8vw, 1.5rem);
 }
 
 * {
   box-sizing: border-box;
+}
+
+html {
+  font-size: 100%;
 }
 
 html,
@@ -31,6 +42,7 @@ body {
 
 body {
   min-height: 100dvh;
+  font-size: var(--font-body);
 }
 
 .noise {
@@ -79,7 +91,7 @@ body {
   place-items: center;
   border-radius: 6px;
   background: linear-gradient(180deg, var(--accent), #b91c1c);
-  font-size: 13px;
+  font-size: var(--font-mark);
   box-shadow: 0 4px 10px rgba(255, 77, 77, 0.22);
 }
 
@@ -91,7 +103,7 @@ body {
 h1 {
   margin: 0;
   font-family: Syne, sans-serif;
-  font-size: 16px;
+  font-size: var(--font-body);
   line-height: 1;
   letter-spacing: -0.04em;
 }
@@ -120,7 +132,7 @@ h1 {
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 16px;
+  font-size: max(1rem, 16px);
   height: var(--chrome-inner);
   min-height: var(--chrome-inner);
   padding: 0 10px;
@@ -156,7 +168,7 @@ button {
   height: var(--chrome-inner);
   min-width: 64px;
   padding: 0 16px;
-  font-size: 15px;
+  font-size: var(--font-ui);
   border-radius: 999px;
   background: #ff0000;
 }
@@ -169,7 +181,7 @@ button {
   min-height: 1.3em;
   margin: 10px 0 0;
   color: var(--muted);
-  font-size: 14px;
+  font-size: var(--font-status);
 }
 
 .status.error {
@@ -359,7 +371,7 @@ body:has(#stage:not([hidden])) {
   height: var(--chrome-inner);
   flex: 0 0 auto;
   padding: 0 16px;
-  font-size: 24px;
+  font-size: var(--font-pitch-btn);
   line-height: 1;
   background: #c8cdd6;
   color: #12141c;
@@ -396,7 +408,7 @@ body:has(#stage:not([hidden])) {
 
 .pitch-label {
   color: var(--muted);
-  font-size: 16px;
+  font-size: var(--font-pitch-label);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: lowercase;
@@ -427,7 +439,7 @@ body:has(#stage:not([hidden])) {
   margin: 0;
   min-width: 2.2ch;
   font-family: Syne, sans-serif;
-  font-size: 22px;
+  font-size: var(--font-semitone);
   line-height: 1;
   letter-spacing: -0.04em;
   text-align: center;
@@ -452,7 +464,7 @@ body:has(#stage:not([hidden])) {
   border-radius: 999px;
   background: transparent;
   color: var(--muted);
-  font-size: 15px;
+  font-size: var(--font-ui);
   white-space: nowrap;
 }
 
@@ -602,7 +614,6 @@ body:has(#stage:not([hidden])) {
 
   .status {
     min-height: 0;
-    font-size: 13px;
   }
 }
 
@@ -666,7 +677,7 @@ body:has(#stage:not([hidden])) {
     flex: 1 1 0;
     min-width: 56px;
     padding: 0 10px;
-    font-size: 28px;
+    font-size: 1.75rem;
   }
 
   .app:has(#stage:not([hidden])) .pitch-readout {
@@ -674,21 +685,21 @@ body:has(#stage:not([hidden])) {
   }
 
   .app:has(#stage:not([hidden])) .pitch-label {
-    font-size: 15px;
+    font-size: var(--font-ui);
   }
 
   .app:has(#stage:not([hidden])) .semitone {
-    font-size: 22px;
+    font-size: var(--font-semitone);
   }
 
   .app:has(#stage:not([hidden])) .pitch-reset {
     padding: 0 12px;
-    font-size: 15px;
+    font-size: var(--font-ui);
   }
 
   .app:has(#stage:not([hidden])) .loader button {
     min-width: 72px;
-    font-size: 15px;
+    font-size: var(--font-ui);
   }
 
   .app:has(#stage:not([hidden])) .pitch-spinner {
@@ -698,16 +709,18 @@ body:has(#stage:not([hidden])) {
   }
 }
 
-@media (pointer: coarse) {
-  .result {
-    min-height: 104px;
-  }
-
+@media (min-width: 700px) and (max-width: 1366px) {
   .result-title {
-    font-size: clamp(1.2rem, 0.78rem + 1.85vw, 1.625rem);
+    font-size: clamp(1.125rem, 0.88rem + 0.85vw, 1.375rem);
   }
 
   .result-meta {
-    font-size: clamp(0.9375rem, 0.72rem + 0.9vw, 1.1875rem);
+    font-size: clamp(0.8125rem, 0.72rem + 0.4vw, 1.0625rem);
+  }
+}
+
+@media (pointer: coarse) {
+  .result {
+    min-height: 104px;
   }
 }
