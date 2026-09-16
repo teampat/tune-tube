@@ -60,6 +60,7 @@ let pausedByBackground = false;
 let sawPauseAfterShow = false;
 let lastPitchAt = 0;
 let resumeHitHideTimer = 0;
+let ignoreYtPauseUntil = 0;
 
 async function loadServerConfig() {
   try {
@@ -339,11 +340,16 @@ function claimIosAudioSession() {
 }
 
 function pitchStartGrace() {
-  return performance.now() - lastPitchAt < 2500 || performance.now() - lastMuteAt < 1000;
+  return (
+    performance.now() < ignoreYtPauseUntil ||
+    performance.now() - lastPitchAt < 2500 ||
+    performance.now() - lastMuteAt < 1000
+  );
 }
 
 function markPitchLive() {
   lastPitchAt = performance.now();
+  ignoreYtPauseUntil = performance.now() + 5000;
   playbackHeld = false;
   pausedByBackground = false;
   sawPauseAfterShow = true;
@@ -532,12 +538,14 @@ function reconnectIosPreview() {
 }
 
 function attachDecodedBuffer(buffer, semitones) {
-  if (!IS_IOS || !previewShifter) {
+  const source = previewShifter?._filter?.sourceSound;
+  if (!previewShifter || !source?.buffer) {
     startPreview(buffer, semitones, currentYtTime());
     return;
   }
-  const source = previewShifter._filter?.source;
-  if (source) source.buffer = buffer;
+  source.buffer = buffer;
+  source.position = 0;
+  previewShifter._filter.sourcePosition = 0;
   previewShifter.duration = buffer.duration;
   previewSourceRate = buffer.sampleRate;
   previewShifter.tempo = 1;
@@ -565,7 +573,6 @@ function armIosShifter() {
     return;
   }
   startPreview(getIosDummyBuffer(), currentPitch || 1, currentYtTime());
-  if (previewGain) previewGain.gain.value = 0;
 }
 
 function unlockAudio() {
@@ -755,6 +762,7 @@ function setPitch(semitones) {
   sawPauseAfterShow = true;
   hideBackgroundResumeHit();
 
+  keepVideoSilent();
   claimIosAudioSession();
   unlockAudio();
   if (IS_IOS) armIosShifter();
@@ -796,7 +804,7 @@ function keepPlayingVideo() {
 
 function playShiftedAudio() {
   markPitchLive();
-  keepVideoSilent();
+  if (!ytForcedMute) keepVideoSilent();
   claimIosAudioSession();
   unlockAudio();
   snapToOriginal();
@@ -831,7 +839,7 @@ async function ensureShiftedPlayback() {
     const buffer = await decodeOriginal(currentVideoId);
     if (job !== pitchJob || currentPitch !== wanted || currentPitch === 0) return;
     markPitchLive();
-    if (IS_IOS && previewShifter) attachDecodedBuffer(buffer, currentPitch);
+    if (previewShifter?._filter?.sourceSound) attachDecodedBuffer(buffer, currentPitch);
     else startPreview(buffer, currentPitch, currentYtTime());
     playShiftedAudio();
     noteYtTime();
@@ -1137,6 +1145,7 @@ function onPitchPointerDown(event) {
   pausedByBackground = false;
   sawPauseAfterShow = true;
   hideBackgroundResumeHit();
+  keepVideoSilent();
   claimIosAudioSession();
   getAudioCtx().resume().catch(() => {});
   armIosShifter();
