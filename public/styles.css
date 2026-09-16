@@ -575,6 +575,21 @@ body:has(#stage:not([hidden])) {
 }
 
 @media (min-width: 700px) and (max-width: 1366px), (pointer: coarse) and (min-width: 700px) {
+  .loader {
+    --chrome-inner: 48px;
+  }
+
+  .loader input {
+    font-size: clamp(1.125rem, 0.95rem + 0.7vw, 1.375rem);
+    padding: 0 16px;
+  }
+
+  .loader button {
+    font-size: clamp(1.0625rem, 0.92rem + 0.5vw, 1.25rem);
+    min-width: 84px;
+    padding: 0 20px;
+  }
+
   .app:has(#stage:not([hidden])) .chrome {
     flex-wrap: nowrap;
     gap: 6px 8px;
