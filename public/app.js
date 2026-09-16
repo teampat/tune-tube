@@ -346,7 +346,27 @@ function pauseForBackground() {
   } catch {
     // ignore
   }
-  if (audioCtx?.state === "running") audioCtx.suspend().catch(() => {});
+}
+
+function restorePitchOutput() {
+  if (isPageHidden() || currentPitch === 0) return;
+  claimIosAudioSession();
+  if (audioCtx) audioCtx.resume().catch(() => {});
+  kickHtmlAudio();
+  const real = currentVideoId && decodedBuffers.get(currentVideoId);
+  if (IS_IOS && real && (!previewShifter || iosDummyShifter)) {
+    startPreview(real, currentPitch, currentYtTime());
+  } else if (IS_IOS) {
+    reconnectIosPreview();
+  }
+  resumePreview();
+  snapToOriginal();
+}
+
+function onPageShown() {
+  if (isPageHidden()) return;
+  if (audioCtx) audioCtx.resume().catch(() => {});
+  if (currentPitch !== 0 && (isYtPlaying() || isShiftMode())) restorePitchOutput();
 }
 
 function kickHtmlAudio() {
@@ -846,9 +866,8 @@ function onPlayerStateChange(event) {
   const state = event.data;
 
   if (state === YT.PlayerState.PLAYING) {
-    if (isShiftMode()) {
-      getAudioCtx().resume().catch(() => {});
-      resumePreview();
+    if (currentPitch !== 0) {
+      restorePitchOutput();
       if (ytTimelineJumped()) snapToOriginal();
     }
     return;
@@ -1043,11 +1062,14 @@ setInterval(() => {
 
 document.addEventListener("visibilitychange", () => {
   if (isPageHidden()) pauseForBackground();
+  else onPageShown();
 });
 document.addEventListener("webkitvisibilitychange", () => {
   if (isPageHidden()) pauseForBackground();
+  else onPageShown();
 });
 window.addEventListener("pagehide", pauseForBackground);
+window.addEventListener("pageshow", onPageShown);
 document.addEventListener("freeze", pauseForBackground);
 
 renderPitch();
