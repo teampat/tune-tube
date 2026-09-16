@@ -57,6 +57,7 @@ let lastMuteAt = 0;
 let playbackHeld = false;
 let pausedByBackground = false;
 let sawPauseAfterShow = false;
+let lastPitchAt = 0;
 
 async function loadServerConfig() {
   try {
@@ -333,6 +334,10 @@ function claimIosAudioSession() {
   } catch {
     // older Safari
   }
+}
+
+function pitchStartGrace() {
+  return performance.now() - lastPitchAt < 1800 || performance.now() - lastMuteAt < 700;
 }
 
 function isPageHidden() {
@@ -696,6 +701,11 @@ function setPitch(semitones) {
     return;
   }
 
+  lastPitchAt = performance.now();
+  playbackHeld = false;
+  pausedByBackground = false;
+  sawPauseAfterShow = true;
+
   keepVideoSilent();
   claimIosAudioSession();
   unlockAudio();
@@ -756,6 +766,7 @@ async function ensureShiftedPlayback() {
     keepVideoSilent();
     hideLoading();
     previewShifter.pitchSemitones = wanted;
+    resumePreview();
     return;
   }
 
@@ -925,8 +936,7 @@ function onPlayerStateChange(event) {
 
   if (state === YT.PlayerState.PAUSED && currentPitch !== 0) {
     if (pausedByBackground) sawPauseAfterShow = true;
-    const muteEcho = IS_IOS && performance.now() - lastMuteAt < 700;
-    if (muteEcho) return;
+    if (pitchStartGrace()) return;
     holdPlayback();
   }
 }
@@ -1056,6 +1066,10 @@ function onPitchPointerDown(event) {
   unlockAudio();
   if (!IS_IOS || !currentVideoId) return;
   if (next === 0) return;
+  lastPitchAt = performance.now();
+  playbackHeld = false;
+  pausedByBackground = false;
+  sawPauseAfterShow = true;
   keepVideoSilent();
   claimIosAudioSession();
   getAudioCtx().resume().catch(() => {});
@@ -1082,10 +1096,10 @@ setInterval(() => {
   const ended = state === window.YT?.PlayerState?.ENDED;
   const paused =
     state === window.YT?.PlayerState?.PAUSED || state === window.YT?.PlayerState?.CUED;
-  const muteEcho = IS_IOS && performance.now() - lastMuteAt < 700;
+  const muteEcho = pitchStartGrace();
   const playing = isYtPlaying();
 
-  if (pausedByBackground) {
+  if (pausedByBackground && !pitchStartGrace()) {
     pausePreview();
     if (playing && !sawPauseAfterShow) {
       try {
@@ -1094,13 +1108,14 @@ setInterval(() => {
         // wait for a real user play
       }
     }
-  } else if (ended || (paused && !muteEcho) || (playbackHeld && !playing)) {
+  } else if (ended || (paused && !muteEcho) || (playbackHeld && !playing && !muteEcho)) {
     playbackHeld = true;
     pausePreview();
-  } else if (audioReady && playing) {
+  } else if (audioReady && (playing || muteEcho)) {
     playbackHeld = false;
     getAudioCtx().resume().catch(() => {});
     resumePreview();
+    if (!playing) keepPlayingVideo();
   }
 
   if (!hasTime) return;
