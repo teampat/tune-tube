@@ -576,7 +576,7 @@ body:has(#stage:not([hidden])) {
 
 @media (min-width: 700px) and (max-width: 1366px), (pointer: coarse) and (min-width: 700px) {
   .chrome {
-    --chrome-inner: 44px;
+    --chrome-inner: 40px;
     align-items: stretch;
   }
 
