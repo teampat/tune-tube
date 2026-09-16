@@ -51,6 +51,8 @@ let decodeJobs = new Map();
 let iosWarmNode = null;
 let iosDummyShifter = false;
 let iosDummyBuf = null;
+let previewDest = null;
+let iosGraphPull = null;
 
 async function loadServerConfig() {
   try {
@@ -284,7 +286,8 @@ function pitchLatency() {
   const base = Number.isFinite(ctx.baseLatency) ? ctx.baseLatency : 0;
   const device = out || base;
   // Chrome ScriptProcessor keeps one extra buffer in flight.
-  return IS_CHROMIUM ? node * 2 + device : node + device;
+  // iOS plays through an HTMLAudioElement, which adds a small extra buffer.
+  return (IS_CHROMIUM ? node * 2 + device : node + device) + (IS_IOS ? 0.12 : 0);
 }
 
 function originalPlayhead() {
@@ -310,14 +313,20 @@ function getAudioCtx() {
 }
 
 function kickHtmlAudio() {
+  if (IS_IOS && audioEl.dataset.streamKey === "pitch") {
+    ensureIosPitchElement();
+    return;
+  }
   try {
+    audioEl.srcObject = null;
     if (!audioEl.getAttribute("src") || audioEl.dataset.streamKey !== "silent") {
       audioEl.src = SILENT_WAV;
       audioEl.dataset.streamKey = "silent";
       audioEl.loop = true;
     }
     audioEl.muted = false;
-    audioEl.volume = 0.001;
+    audioEl.volume = IS_IOS ? 1 : 0.001;
+    audioEl.playsInline = true;
     const play = audioEl.play();
     if (play) play.catch(() => {});
   } catch {
@@ -334,9 +343,74 @@ function warmIosGraph() {
     iosWarmNode.onaudioprocess = (event) => {
       event.outputBuffer.getChannelData(0).fill(0);
     };
-    iosWarmNode.connect(ctx.destination);
+    if (!previewDest) iosWarmNode.connect(ctx.destination);
   } catch {
     iosWarmNode = null;
+  }
+}
+
+function wirePreviewOutput() {
+  const ctx = getAudioCtx();
+  if (!previewGain) {
+    previewGain = ctx.createGain();
+    previewGain.gain.value = SHIFT_OUTPUT_GAIN;
+  }
+  try {
+    previewGain.disconnect();
+  } catch {
+    // not connected yet
+  }
+  if (IS_IOS) {
+    try {
+      if (!previewDest) previewDest = ctx.createMediaStreamDestination();
+      if (!iosGraphPull) {
+        iosGraphPull = ctx.createGain();
+        iosGraphPull.gain.value = 0;
+        iosGraphPull.connect(ctx.destination);
+      }
+      previewGain.connect(previewDest);
+      previewGain.connect(iosGraphPull);
+    } catch {
+      previewDest = null;
+      previewGain.connect(ctx.destination);
+    }
+  } else {
+    previewGain.connect(ctx.destination);
+  }
+}
+
+function ensureIosPitchElement() {
+  if (!IS_IOS) return;
+  audioEl.playsInline = true;
+  audioEl.muted = false;
+  if (previewDest) {
+    if (audioEl.srcObject !== previewDest.stream) {
+      try {
+        audioEl.pause();
+      } catch {
+        // ignore
+      }
+      audioEl.removeAttribute("src");
+      audioEl.srcObject = previewDest.stream;
+      audioEl.dataset.streamKey = "pitch";
+    }
+    audioEl.loop = false;
+    audioEl.volume = 1;
+  }
+  const play = audioEl.play();
+  if (play) play.catch(() => {});
+}
+
+function clearPitchMedia() {
+  try {
+    audioEl.pause();
+    audioEl.srcObject = null;
+    audioEl.removeAttribute("src");
+    delete audioEl.dataset.streamKey;
+    audioEl.loop = false;
+    audioEl.load();
+  } catch {
+    // ignore if the element is not ready
   }
 }
 
@@ -376,6 +450,7 @@ function attachDecodedBuffer(buffer, semitones) {
   iosDummyShifter = false;
   audioReady = true;
   reconnectIosPreview();
+  if (IS_IOS) ensureIosPitchElement();
   snapToOriginal();
 }
 
@@ -403,8 +478,9 @@ function armIosShifter() {
 function unlockAudio() {
   const ctx = getAudioCtx();
   ctx.resume().catch(() => {});
-  kickHtmlAudio();
-  warmIosGraph();
+  if (IS_IOS && currentPitch !== 0 && previewDest) ensureIosPitchElement();
+  else kickHtmlAudio();
+  if (!IS_IOS) warmIosGraph();
   if (ctx.state === "running") return;
   try {
     const src = ctx.createBufferSource();
@@ -462,6 +538,7 @@ function pausePreview() {
 function resumePreview() {
   if (previewGain) previewGain.gain.value = SHIFT_OUTPUT_GAIN;
   connectPreview();
+  if (IS_IOS) ensureIosPitchElement();
 }
 
 function seekPreview(seconds) {
@@ -529,10 +606,7 @@ async function decodeOriginal(videoId) {
 function startPreview(buffer, semitones, _at) {
   const ctx = getAudioCtx();
   stopPreview();
-  if (!previewGain) {
-    previewGain = ctx.createGain();
-    previewGain.connect(ctx.destination);
-  }
+  wirePreviewOutput();
   previewGain.gain.value = SHIFT_OUTPUT_GAIN;
   previewSourceRate = buffer.sampleRate;
   previewShifter = new PitchShifter(ctx, buffer, STRETCH_BUFFER);
@@ -542,6 +616,7 @@ function startPreview(buffer, semitones, _at) {
   previewConnected = true;
   iosDummyShifter = buffer === iosDummyBuf;
   audioReady = !iosDummyShifter;
+  if (IS_IOS) ensureIosPitchElement();
   snapToOriginal();
 }
 
@@ -550,19 +625,8 @@ function restoreYoutubeAudio() {
   abortPrepare();
   shiftLoading = false;
   stopPreview();
-  if (IS_IOS) {
-    kickHtmlAudio();
-  } else {
-    audioEl.pause();
-    audioEl.loop = false;
-    try {
-      audioEl.removeAttribute("src");
-      delete audioEl.dataset.streamKey;
-      audioEl.load();
-    } catch {
-      // ignore if the element is not ready
-    }
-  }
+  clearPitchMedia();
+  if (IS_IOS) kickHtmlAudio();
   unmuteVideo();
 }
 
@@ -585,9 +649,12 @@ function setPitch(semitones) {
     return;
   }
 
-  unlockAudio();
   keepVideoSilent();
-  if (IS_IOS) armIosShifter();
+  unlockAudio();
+  if (IS_IOS) {
+    armIosShifter();
+    ensureIosPitchElement();
+  }
   if (previewShifter && audioReady && !iosDummyShifter) {
     previewShifter.pitchSemitones = currentPitch;
     resumePreview();
@@ -689,14 +756,7 @@ function stopPlayback() {
   lastKnownYtTime = 0;
   lastYtWall = 0;
   hideLoading();
-  audioEl.pause();
-  try {
-    audioEl.removeAttribute("src");
-    delete audioEl.dataset.streamKey;
-    audioEl.load();
-  } catch {
-    // ignore if the element is not ready
-  }
+  clearPitchMedia();
   resetYtPlayer();
 }
 
@@ -845,16 +905,7 @@ async function loadVideo(videoId) {
   lastKnownYtTime = 0;
   lastYtWall = 0;
   renderPitch();
-  if (!(IS_IOS && audioEl.dataset.streamKey === "silent")) {
-    audioEl.pause();
-    try {
-      audioEl.removeAttribute("src");
-      delete audioEl.dataset.streamKey;
-      audioEl.load();
-    } catch {
-      // ignore
-    }
-  }
+  clearPitchMedia();
   hideLoading();
   clearResults();
   showPoster(videoId);
@@ -931,6 +982,7 @@ function onPitchPointerDown(event) {
   if (event.pointerType === "mouse" && event.button !== 0) return;
   unlockAudio();
   armIosShifter();
+  ensureIosPitchElement();
 }
 
 pitchUp.addEventListener("pointerdown", onPitchPointerDown);
@@ -974,7 +1026,8 @@ document.addEventListener("visibilitychange", () => {
   if (!isShiftMode()) return;
   if (document.hidden && isYtPlaying()) {
     getAudioCtx().resume().catch(() => {});
-    kickHtmlAudio();
+    if (IS_IOS) ensureIosPitchElement();
+    else kickHtmlAudio();
     resumePreview();
   } else if (!isYtPlaying()) {
     pausePreview();
@@ -982,3 +1035,4 @@ document.addEventListener("visibilitychange", () => {
 });
 
 renderPitch();
+audioEl.playsInline = true;

@@ -530,7 +530,13 @@ body:has(#stage:not([hidden])) {
 }
 
 #shifted-audio {
-  display: none;
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 @media (max-width: 1180px) {
