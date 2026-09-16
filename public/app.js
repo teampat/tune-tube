@@ -60,7 +60,6 @@ let pausedByBackground = false;
 let sawPauseAfterShow = false;
 let lastPitchAt = 0;
 let resumeHitHideTimer = 0;
-let ignoreYtPauseUntil = 0;
 
 async function loadServerConfig() {
   try {
@@ -236,7 +235,7 @@ function keepVideoSilent() {
     return;
   }
   if (!ytPlayer || typeof ytPlayer.mute !== "function") return;
-  if (IS_IOS && ytForcedMute) {
+  if (ytForcedMute) {
     try {
       if (ytPlayer.isMuted?.()) return;
     } catch {
@@ -339,17 +338,12 @@ function claimIosAudioSession() {
   }
 }
 
-function pitchStartGrace() {
-  return (
-    performance.now() < ignoreYtPauseUntil ||
-    performance.now() - lastPitchAt < 2500 ||
-    performance.now() - lastMuteAt < 1000
-  );
+function muteEcho() {
+  return lastMuteAt > 0 && performance.now() - lastMuteAt < 700;
 }
 
 function markPitchLive() {
   lastPitchAt = performance.now();
-  ignoreYtPauseUntil = performance.now() + 5000;
   playbackHeld = false;
   pausedByBackground = false;
   sawPauseAfterShow = true;
@@ -1009,7 +1003,7 @@ function onPlayerStateChange(event) {
 
   if (state === YT.PlayerState.PAUSED && currentPitch !== 0) {
     if (pausedByBackground) sawPauseAfterShow = true;
-    if (!audioReady || shiftLoading || pitchStartGrace()) return;
+    if (!audioReady || shiftLoading || muteEcho()) return;
     holdPlayback();
   }
 }
@@ -1183,16 +1177,19 @@ setInterval(() => {
   const ended = state === window.YT?.PlayerState?.ENDED;
   const paused =
     state === window.YT?.PlayerState?.PAUSED || state === window.YT?.PlayerState?.CUED;
-  const muteEcho = pitchStartGrace();
+  const muteGlitch = muteEcho();
   const playing = isYtPlaying();
 
-  if (pausedByBackground && !pitchStartGrace()) {
+  if (pausedByBackground) {
     pausePreview();
-  } else if (ended || (paused && !muteEcho) || (playbackHeld && !playing && !muteEcho)) {
+  } else if (ended || (paused && !muteGlitch) || (playbackHeld && !playing)) {
     playbackHeld = true;
     pausePreview();
-  } else if (audioReady && (playing || muteEcho)) {
+  } else if (audioReady && playing) {
     playbackHeld = false;
+    getAudioCtx().resume().catch(() => {});
+    resumePreview();
+  } else if (audioReady && muteGlitch && !playbackHeld) {
     getAudioCtx().resume().catch(() => {});
     resumePreview();
     if (!playing) keepPlayingVideo();
