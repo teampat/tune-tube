@@ -575,19 +575,25 @@ body:has(#stage:not([hidden])) {
 }
 
 @media (min-width: 700px) and (max-width: 1366px), (pointer: coarse) and (min-width: 700px) {
-  .loader {
-    --chrome-inner: 48px;
+  .chrome {
+    --chrome-inner: 44px;
+    align-items: stretch;
   }
 
   .loader input {
-    font-size: clamp(1.125rem, 0.95rem + 0.7vw, 1.375rem);
-    padding: 0 16px;
+    font-size: clamp(1.0625rem, 0.92rem + 0.55vw, 1.25rem);
+    padding: 0 14px;
   }
 
   .loader button {
-    font-size: clamp(1.0625rem, 0.92rem + 0.5vw, 1.25rem);
-    min-width: 84px;
-    padding: 0 20px;
+    font-size: clamp(1rem, 0.88rem + 0.4vw, 1.125rem);
+    min-width: 76px;
+    padding: 0 16px;
+  }
+
+  .desk,
+  .pitch-card {
+    height: calc(var(--chrome-inner) + var(--chrome-pad) * 2 + 2px);
   }
 
   .app:has(#stage:not([hidden])) .chrome {
