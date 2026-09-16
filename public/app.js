@@ -9,7 +9,7 @@ const IS_CHROMIUM =
 const DRIFT_SECONDS = IS_IOS ? 0.55 : 0.4;
 const SEEK_SECONDS = 0.5;
 const SYNC_MS = IS_IOS ? 500 : 320;
-const STRETCH_BUFFER = 4096;
+const STRETCH_BUFFER = IS_IOS ? 1024 : 4096;
 const SILENT_WAV =
   "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
 let SHIFT_OUTPUT_GAIN = 0.75;
@@ -51,6 +51,8 @@ let decodeJobs = new Map();
 let iosWarmNode = null;
 let iosDummyShifter = false;
 let iosDummyBuf = null;
+let ytForcedMute = false;
+let lastSyncYtTime = 0;
 
 async function loadServerConfig() {
   try {
@@ -221,17 +223,29 @@ function loadYouTubeApi() {
 }
 
 function keepVideoSilent() {
-  if (currentPitch === 0) return;
+  if (currentPitch === 0) {
+    ytForcedMute = false;
+    return;
+  }
   if (!ytPlayer || typeof ytPlayer.mute !== "function") return;
+  if (IS_IOS && ytForcedMute) {
+    try {
+      if (ytPlayer.isMuted?.()) return;
+    } catch {
+      return;
+    }
+  }
   try {
     ytPlayer.mute();
     ytPlayer.setVolume(0);
+    ytForcedMute = true;
   } catch {
     // iframe may not be ready
   }
 }
 
 function unmuteVideo() {
+  ytForcedMute = false;
   if (!ytPlayer || typeof ytPlayer.unMute !== "function") return;
   try {
     ytPlayer.unMute();
@@ -300,7 +314,7 @@ function getAudioCtx() {
     audioCtx = new Ctx();
   }
   audioCtx.onstatechange = () => {
-    if (audioCtx.state === "running") return;
+    if (isPageHidden() || audioCtx.state === "running") return;
     audioCtx.resume().catch(() => {});
     if (currentPitch !== 0) kickHtmlAudio();
   };
@@ -316,7 +330,27 @@ function claimIosAudioSession() {
   }
 }
 
+function isPageHidden() {
+  return document.hidden || document.visibilityState === "hidden";
+}
+
+function pauseForBackground() {
+  try {
+    ytPlayer?.pauseVideo();
+  } catch {
+    // iframe may not be ready
+  }
+  pausePreview();
+  try {
+    audioEl.pause();
+  } catch {
+    // ignore
+  }
+  if (audioCtx?.state === "running") audioCtx.suspend().catch(() => {});
+}
+
 function kickHtmlAudio() {
+  if (isPageHidden()) return;
   try {
     audioEl.srcObject = null;
     if (!audioEl.getAttribute("src") || audioEl.dataset.streamKey !== "silent") {
@@ -498,10 +532,7 @@ function pausePreview() {
 function resumePreview() {
   if (previewGain) previewGain.gain.value = SHIFT_OUTPUT_GAIN;
   connectPreview();
-  if (IS_IOS) {
-    getAudioCtx().resume().catch(() => {});
-    kickHtmlAudio();
-  }
+  if (IS_IOS) getAudioCtx().resume().catch(() => {});
 }
 
 function seekPreview(seconds) {
@@ -652,7 +683,7 @@ function syncAudioTime(force = false) {
 }
 
 function keepPlayingVideo() {
-  if (isYtPlaying()) return;
+  if (isPageHidden() || isYtPlaying()) return;
   try {
     ytPlayer?.playVideo();
   } catch {
@@ -830,7 +861,9 @@ function onPlayerStateChange(event) {
 
   if (state === YT.PlayerState.PAUSED && isShiftMode()) {
     if (ytTimelineJumped()) snapToOriginal();
-    pausePreview();
+    // iOS often reports PAUSED when we mute the iframe; only stop audio if the
+    // playhead actually froze (handled in the sync loop).
+    if (!IS_IOS) pausePreview();
   }
 }
 
@@ -971,42 +1004,51 @@ pitchDown.addEventListener("click", () => setPitch(currentPitch - 1));
 pitchReset.addEventListener("click", () => setPitch(0));
 
 setInterval(() => {
-  if (!isShiftMode()) return;
-  keepVideoSilent();
+  if (isPageHidden()) {
+    pauseForBackground();
+    return;
+  }
+  if (currentPitch === 0 || !previewShifter) return;
 
-  if (shiftLoading || isYtPlaying()) {
+  const ytTime = ytPlayer?.getCurrentTime?.();
+  const hasTime = typeof ytTime === "number";
+  const moving = hasTime && Math.abs(ytTime - lastSyncYtTime) > 0.04;
+  const state = ytPlayer?.getPlayerState?.();
+  const ended = state === window.YT?.PlayerState?.ENDED;
+  const frozenPause =
+    hasTime &&
+    !moving &&
+    (state === window.YT?.PlayerState?.PAUSED || state === window.YT?.PlayerState?.CUED);
+
+  if (ended || (frozenPause && !shiftLoading && audioReady)) {
+    pausePreview();
+  } else if (audioReady && (shiftLoading || moving || isYtPlaying())) {
     getAudioCtx().resume().catch(() => {});
     resumePreview();
-  } else {
-    const state = ytPlayer?.getPlayerState?.();
-    if (!IS_IOS || state === YT.PlayerState.PAUSED || state === YT.PlayerState.ENDED) {
-      pausePreview();
-    }
   }
 
-  if (!ytPlayer) return;
-  const ytTime = ytPlayer.getCurrentTime?.();
-  if (typeof ytTime !== "number") return;
+  if (!hasTime) return;
 
   const jumped = ytTimelineJumped(ytTime);
   if (jumped && previewShifter) {
     snapToOriginal();
-    if (isYtPlaying()) resumePreview();
+    if (moving || isYtPlaying()) resumePreview();
   }
   noteYtTime(ytTime);
-  if (!jumped && isYtPlaying() && previewConnected) syncAudioTime(false);
+  lastSyncYtTime = ytTime;
+  if (!jumped && audioReady && previewConnected && (moving || isYtPlaying())) {
+    syncAudioTime(false);
+  }
 }, SYNC_MS);
 
 document.addEventListener("visibilitychange", () => {
-  if (!isShiftMode()) return;
-  if (document.hidden && isYtPlaying()) {
-    getAudioCtx().resume().catch(() => {});
-    kickHtmlAudio();
-    resumePreview();
-  } else if (!isYtPlaying()) {
-    pausePreview();
-  }
+  if (isPageHidden()) pauseForBackground();
 });
+document.addEventListener("webkitvisibilitychange", () => {
+  if (isPageHidden()) pauseForBackground();
+});
+window.addEventListener("pagehide", pauseForBackground);
+document.addEventListener("freeze", pauseForBackground);
 
 renderPitch();
 audioEl.playsInline = true;
