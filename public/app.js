@@ -49,6 +49,8 @@ let previewSourceRate = 0;
 let decodedBuffers = new Map();
 let decodeJobs = new Map();
 let iosWarmNode = null;
+let iosDummyShifter = false;
+let iosDummyBuf = null;
 
 async function loadServerConfig() {
   try {
@@ -338,6 +340,66 @@ function warmIosGraph() {
   }
 }
 
+function getIosDummyBuffer() {
+  const ctx = getAudioCtx();
+  if (iosDummyBuf && iosDummyBuf.sampleRate === ctx.sampleRate) return iosDummyBuf;
+  iosDummyBuf = ctx.createBuffer(
+    2,
+    Math.max(STRETCH_BUFFER * 4, Math.floor(ctx.sampleRate * 0.25)),
+    ctx.sampleRate,
+  );
+  return iosDummyBuf;
+}
+
+function reconnectIosPreview() {
+  if (!previewShifter || !previewGain) return;
+  try {
+    previewShifter.connect(previewGain);
+  } catch {
+    // already connected
+  }
+  previewConnected = true;
+  if (currentPitch !== 0) previewGain.gain.value = SHIFT_OUTPUT_GAIN;
+}
+
+function attachDecodedBuffer(buffer, semitones) {
+  if (!IS_IOS || !previewShifter) {
+    startPreview(buffer, semitones, currentYtTime());
+    return;
+  }
+  const source = previewShifter._filter?.source;
+  if (source) source.buffer = buffer;
+  previewShifter.duration = buffer.duration;
+  previewSourceRate = buffer.sampleRate;
+  previewShifter.tempo = 1;
+  previewShifter.pitchSemitones = semitones;
+  iosDummyShifter = false;
+  audioReady = true;
+  reconnectIosPreview();
+  snapToOriginal();
+}
+
+function armIosShifter() {
+  if (!IS_IOS || !currentVideoId) return;
+  unlockAudio();
+  const real = decodedBuffers.get(currentVideoId);
+  if (previewShifter && !iosDummyShifter && real) {
+    reconnectIosPreview();
+    return;
+  }
+  if (real) {
+    startPreview(real, currentPitch || 1, currentYtTime());
+    if (currentPitch === 0 && previewGain) previewGain.gain.value = 0;
+    return;
+  }
+  if (previewShifter) {
+    reconnectIosPreview();
+    return;
+  }
+  startPreview(getIosDummyBuffer(), currentPitch || 1, currentYtTime());
+  if (previewGain) previewGain.gain.value = 0;
+}
+
 function unlockAudio() {
   const ctx = getAudioCtx();
   ctx.resume().catch(() => {});
@@ -358,6 +420,7 @@ function stopPreview() {
   previewConnected = false;
   audioReady = false;
   previewSourceRate = 0;
+  iosDummyShifter = false;
   if (previewShifter) {
     try {
       previewShifter.disconnect();
@@ -477,7 +540,8 @@ function startPreview(buffer, semitones, _at) {
   previewShifter.pitchSemitones = semitones;
   previewShifter.connect(previewGain);
   previewConnected = true;
-  audioReady = true;
+  iosDummyShifter = buffer === iosDummyBuf;
+  audioReady = !iosDummyShifter;
   snapToOriginal();
 }
 
@@ -486,14 +550,18 @@ function restoreYoutubeAudio() {
   abortPrepare();
   shiftLoading = false;
   stopPreview();
-  audioEl.pause();
-  audioEl.loop = false;
-  try {
-    audioEl.removeAttribute("src");
-    delete audioEl.dataset.streamKey;
-    audioEl.load();
-  } catch {
-    // ignore if the element is not ready
+  if (IS_IOS) {
+    kickHtmlAudio();
+  } else {
+    audioEl.pause();
+    audioEl.loop = false;
+    try {
+      audioEl.removeAttribute("src");
+      delete audioEl.dataset.streamKey;
+      audioEl.load();
+    } catch {
+      // ignore if the element is not ready
+    }
   }
   unmuteVideo();
 }
@@ -519,7 +587,8 @@ function setPitch(semitones) {
 
   unlockAudio();
   keepVideoSilent();
-  if (previewShifter && audioReady) {
+  if (IS_IOS) armIosShifter();
+  if (previewShifter && audioReady && !iosDummyShifter) {
     previewShifter.pitchSemitones = currentPitch;
     resumePreview();
     getAudioCtx().resume().catch(() => {});
@@ -589,7 +658,8 @@ async function ensureShiftedPlayback() {
     if (job !== pitchJob || currentPitch !== wanted || currentPitch === 0) return;
     const buffer = await decodeOriginal(currentVideoId);
     if (job !== pitchJob || currentPitch !== wanted || currentPitch === 0) return;
-    startPreview(buffer, currentPitch, currentYtTime());
+    if (IS_IOS && previewShifter) attachDecodedBuffer(buffer, currentPitch);
+    else startPreview(buffer, currentPitch, currentYtTime());
     playShiftedAudio();
     noteYtTime();
     if (job === pitchJob) setStatus("");
@@ -860,10 +930,15 @@ resultsEl.addEventListener("click", async (event) => {
 function onPitchPointerDown(event) {
   if (event.pointerType === "mouse" && event.button !== 0) return;
   unlockAudio();
+  armIosShifter();
 }
 
 pitchUp.addEventListener("pointerdown", onPitchPointerDown);
 pitchDown.addEventListener("pointerdown", onPitchPointerDown);
+pitchReset.addEventListener("pointerdown", onPitchPointerDown);
+pitchUp.addEventListener("touchstart", onPitchPointerDown, { passive: true });
+pitchDown.addEventListener("touchstart", onPitchPointerDown, { passive: true });
+pitchReset.addEventListener("touchstart", onPitchPointerDown, { passive: true });
 pitchUp.addEventListener("click", () => setPitch(currentPitch + 1));
 pitchDown.addEventListener("click", () => setPitch(currentPitch - 1));
 pitchReset.addEventListener("click", () => setPitch(0));
@@ -876,7 +951,10 @@ setInterval(() => {
     getAudioCtx().resume().catch(() => {});
     resumePreview();
   } else {
-    pausePreview();
+    const state = ytPlayer?.getPlayerState?.();
+    if (!IS_IOS || state === YT.PlayerState.PAUSED || state === YT.PlayerState.ENDED) {
+      pausePreview();
+    }
   }
 
   if (!ytPlayer) return;
