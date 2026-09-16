@@ -6,10 +6,10 @@ const IS_IOS =
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const IS_CHROMIUM =
   !IS_IOS && /Chrome|Chromium|Edg|OPR|SamsungBrowser/i.test(navigator.userAgent);
-const DRIFT_SECONDS = IS_IOS ? 0.55 : 0.4;
-const SEEK_SECONDS = 0.5;
-const SYNC_MS = IS_IOS ? 200 : 250;
-const STRETCH_BUFFER = IS_IOS ? 1024 : 4096;
+const DRIFT_SECONDS = IS_IOS ? 0.9 : 0.4;
+const SEEK_SECONDS = IS_IOS ? 1.35 : 0.5;
+const SYNC_MS = IS_IOS ? 400 : 250;
+const STRETCH_BUFFER = IS_IOS ? 2048 : 4096;
 const SILENT_WAV =
   "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
 let SHIFT_OUTPUT_GAIN = 0.75;
@@ -54,6 +54,7 @@ let iosDummyShifter = false;
 let iosDummyBuf = null;
 let ytForcedMute = false;
 let lastSyncYtTime = 0;
+let lastSeekAt = 0;
 let lastMuteAt = 0;
 let playbackHeld = false;
 let pausedByBackground = false;
@@ -317,7 +318,7 @@ function getAudioCtx() {
   if (audioCtx) return audioCtx;
   const Ctx = window.AudioContext || window.webkitAudioContext;
   try {
-    audioCtx = new Ctx({ latencyHint: "interactive" });
+    audioCtx = new Ctx({ latencyHint: IS_IOS ? "playback" : "interactive" });
   } catch {
     audioCtx = new Ctx();
   }
@@ -421,7 +422,7 @@ function restorePitchOutput() {
     reconnectIosPreview();
   }
   resumePreview();
-  snapToOriginal();
+  snapToOriginal(true);
 }
 
 function onPageShown() {
@@ -480,6 +481,16 @@ function warmIosGraph() {
   } catch {
     iosWarmNode = null;
   }
+}
+
+function coolIosWarmGraph() {
+  if (!iosWarmNode) return;
+  try {
+    iosWarmNode.disconnect();
+  } catch {
+    // already disconnected
+  }
+  iosWarmNode = null;
 }
 
 function wirePreviewOutput() {
@@ -547,7 +558,8 @@ function attachDecodedBuffer(buffer, semitones) {
   iosDummyShifter = false;
   audioReady = true;
   reconnectIosPreview();
-  snapToOriginal();
+  coolIosWarmGraph();
+  snapToOriginal(true);
 }
 
 function armIosShifter() {
@@ -658,8 +670,10 @@ function previewPlayedSeconds() {
   return pos / bufRate;
 }
 
-function snapToOriginal() {
+function snapToOriginal(force = false) {
   if (!previewShifter) return;
+  if (!force && IS_IOS && audioReady && performance.now() - lastSeekAt < 1200) return;
+  lastSeekAt = performance.now();
   seekPreview(originalPlayhead());
   noteYtTime();
 }
@@ -713,7 +727,8 @@ function startPreview(buffer, semitones, _at) {
   previewConnected = true;
   iosDummyShifter = buffer === iosDummyBuf;
   audioReady = !iosDummyShifter;
-  snapToOriginal();
+  if (audioReady) coolIosWarmGraph();
+  snapToOriginal(true);
 }
 
 function restoreYoutubeAudio() {
@@ -782,7 +797,9 @@ function syncAudioTime(force = false) {
   const target = originalPlayhead();
   const drift = Math.abs(previewPlayedSeconds() - target);
   if (!force && drift <= DRIFT_SECONDS) return;
-  if (IS_IOS && !force && previewConnected && drift < 1.4) return;
+  if (IS_IOS && !force && previewConnected && drift < 1.8) return;
+  if (IS_IOS && !force && performance.now() - lastSeekAt < 1200) return;
+  lastSeekAt = performance.now();
   seekPreview(target);
   noteYtTime();
 }
@@ -801,10 +818,11 @@ function playShiftedAudio() {
   if (!ytForcedMute) keepVideoSilent();
   claimIosAudioSession();
   unlockAudio();
-  snapToOriginal();
+  snapToOriginal(true);
   getAudioCtx().resume().catch(() => {});
   resumePreview();
   keepPlayingVideo();
+  if (audioReady) coolIosWarmGraph();
 }
 
 async function ensureShiftedPlayback() {
@@ -1187,8 +1205,7 @@ setInterval(() => {
     pausePreview();
   } else if (audioReady && playing) {
     playbackHeld = false;
-    getAudioCtx().resume().catch(() => {});
-    resumePreview();
+    if (previewGain && previewGain.gain.value < SHIFT_OUTPUT_GAIN / 2) resumePreview();
   } else if (audioReady && muteGlitch && !playbackHeld) {
     getAudioCtx().resume().catch(() => {});
     resumePreview();
