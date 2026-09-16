@@ -55,6 +55,8 @@ let ytForcedMute = false;
 let lastSyncYtTime = 0;
 let lastMuteAt = 0;
 let playbackHeld = false;
+let pausedByBackground = false;
+let sawPauseAfterShow = false;
 
 async function loadServerConfig() {
   try {
@@ -317,7 +319,7 @@ function getAudioCtx() {
     audioCtx = new Ctx();
   }
   audioCtx.onstatechange = () => {
-    if (isPageHidden() || audioCtx.state === "running") return;
+    if (isPageHidden() || playbackHeld || pausedByBackground || audioCtx.state === "running") return;
     audioCtx.resume().catch(() => {});
     if (currentPitch !== 0) kickHtmlAudio();
   };
@@ -338,6 +340,8 @@ function isPageHidden() {
 }
 
 function pauseForBackground() {
+  pausedByBackground = true;
+  sawPauseAfterShow = false;
   playbackHeld = true;
   try {
     ytPlayer?.pauseVideo();
@@ -354,7 +358,7 @@ function pauseForBackground() {
 
 function restorePitchOutput() {
   if (isPageHidden() || currentPitch === 0) return;
-  if (playbackHeld && !isYtPlaying()) return;
+  if (pausedByBackground || (playbackHeld && !isYtPlaying())) return;
   playbackHeld = false;
   claimIosAudioSession();
   if (audioCtx) audioCtx.resume().catch(() => {});
@@ -372,7 +376,24 @@ function restorePitchOutput() {
 function onPageShown() {
   if (isPageHidden()) return;
   if (audioCtx) audioCtx.resume().catch(() => {});
-  if (currentPitch !== 0 && isYtPlaying()) restorePitchOutput();
+  if (!pausedByBackground) return;
+  playbackHeld = true;
+  pausePreview();
+  try {
+    ytPlayer?.pauseVideo();
+  } catch {
+    // iframe may have auto-resumed
+  }
+  try {
+    audioEl.pause();
+  } catch {
+    // ignore
+  }
+  const state = ytPlayer?.getPlayerState?.();
+  sawPauseAfterShow =
+    state === window.YT?.PlayerState?.PAUSED ||
+    state === window.YT?.PlayerState?.CUED ||
+    state === window.YT?.PlayerState?.ENDED;
 }
 
 function kickHtmlAudio() {
@@ -782,6 +803,7 @@ function stopPlayback() {
   lastKnownYtTime = 0;
   lastYtWall = 0;
   playbackHeld = false;
+  pausedByBackground = false;
   hideLoading();
   clearPitchMedia();
   resetYtPlayer();
@@ -878,6 +900,16 @@ function onPlayerStateChange(event) {
   const state = event.data;
 
   if (state === YT.PlayerState.PLAYING) {
+    if (pausedByBackground && !sawPauseAfterShow) {
+      try {
+        ytPlayer?.pauseVideo();
+      } catch {
+        // keep held after fold
+      }
+      holdPlayback();
+      return;
+    }
+    pausedByBackground = false;
     playbackHeld = false;
     if (currentPitch !== 0) {
       keepVideoSilent();
@@ -892,6 +924,7 @@ function onPlayerStateChange(event) {
   }
 
   if (state === YT.PlayerState.PAUSED && currentPitch !== 0) {
+    if (pausedByBackground) sawPauseAfterShow = true;
     const muteEcho = IS_IOS && performance.now() - lastMuteAt < 700;
     if (muteEcho) return;
     holdPlayback();
@@ -938,6 +971,7 @@ async function loadVideo(videoId) {
   lastKnownYtTime = 0;
   lastYtWall = 0;
   playbackHeld = false;
+  pausedByBackground = false;
   renderPitch();
   clearPitchMedia();
   hideLoading();
@@ -1051,7 +1085,16 @@ setInterval(() => {
   const muteEcho = IS_IOS && performance.now() - lastMuteAt < 700;
   const playing = isYtPlaying();
 
-  if (ended || (paused && !muteEcho) || (playbackHeld && !playing)) {
+  if (pausedByBackground) {
+    pausePreview();
+    if (playing && !sawPauseAfterShow) {
+      try {
+        ytPlayer?.pauseVideo();
+      } catch {
+        // wait for a real user play
+      }
+    }
+  } else if (ended || (paused && !muteEcho) || (playbackHeld && !playing)) {
     playbackHeld = true;
     pausePreview();
   } else if (audioReady && playing) {
