@@ -8,7 +8,7 @@ const IS_CHROMIUM =
   !IS_IOS && /Chrome|Chromium|Edg|OPR|SamsungBrowser/i.test(navigator.userAgent);
 const DRIFT_SECONDS = IS_IOS ? 0.55 : 0.4;
 const SEEK_SECONDS = 0.5;
-const SYNC_MS = IS_IOS ? 500 : 320;
+const SYNC_MS = IS_IOS ? 200 : 250;
 const STRETCH_BUFFER = IS_IOS ? 1024 : 4096;
 const SILENT_WAV =
   "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
@@ -53,6 +53,8 @@ let iosDummyShifter = false;
 let iosDummyBuf = null;
 let ytForcedMute = false;
 let lastSyncYtTime = 0;
+let lastMuteAt = 0;
+let playbackHeld = false;
 
 async function loadServerConfig() {
   try {
@@ -239,6 +241,7 @@ function keepVideoSilent() {
     ytPlayer.mute();
     ytPlayer.setVolume(0);
     ytForcedMute = true;
+    lastMuteAt = performance.now();
   } catch {
     // iframe may not be ready
   }
@@ -335,6 +338,7 @@ function isPageHidden() {
 }
 
 function pauseForBackground() {
+  playbackHeld = true;
   try {
     ytPlayer?.pauseVideo();
   } catch {
@@ -350,6 +354,8 @@ function pauseForBackground() {
 
 function restorePitchOutput() {
   if (isPageHidden() || currentPitch === 0) return;
+  if (playbackHeld && !isYtPlaying()) return;
+  playbackHeld = false;
   claimIosAudioSession();
   if (audioCtx) audioCtx.resume().catch(() => {});
   kickHtmlAudio();
@@ -366,7 +372,7 @@ function restorePitchOutput() {
 function onPageShown() {
   if (isPageHidden()) return;
   if (audioCtx) audioCtx.resume().catch(() => {});
-  if (currentPitch !== 0 && (isYtPlaying() || isShiftMode())) restorePitchOutput();
+  if (currentPitch !== 0 && isYtPlaying()) restorePitchOutput();
 }
 
 function kickHtmlAudio() {
@@ -775,6 +781,7 @@ function stopPlayback() {
   currentVideoId = null;
   lastKnownYtTime = 0;
   lastYtWall = 0;
+  playbackHeld = false;
   hideLoading();
   clearPitchMedia();
   resetYtPlayer();
@@ -861,28 +868,33 @@ function createPlayer(videoId, token) {
   });
 }
 
+function holdPlayback() {
+  playbackHeld = true;
+  pausePreview();
+  snapToOriginal();
+}
+
 function onPlayerStateChange(event) {
-  if (currentPitch !== 0) keepVideoSilent();
   const state = event.data;
 
   if (state === YT.PlayerState.PLAYING) {
+    playbackHeld = false;
     if (currentPitch !== 0) {
+      keepVideoSilent();
       restorePitchOutput();
-      if (ytTimelineJumped()) snapToOriginal();
     }
     return;
   }
 
   if (state === YT.PlayerState.ENDED) {
-    pausePreview();
+    holdPlayback();
     return;
   }
 
-  if (state === YT.PlayerState.PAUSED && isShiftMode()) {
-    if (ytTimelineJumped()) snapToOriginal();
-    // iOS often reports PAUSED when we mute the iframe; only stop audio if the
-    // playhead actually froze (handled in the sync loop).
-    if (!IS_IOS) pausePreview();
+  if (state === YT.PlayerState.PAUSED && currentPitch !== 0) {
+    const muteEcho = IS_IOS && performance.now() - lastMuteAt < 700;
+    if (muteEcho) return;
+    holdPlayback();
   }
 }
 
@@ -925,6 +937,7 @@ async function loadVideo(videoId) {
   currentPitch = 0;
   lastKnownYtTime = 0;
   lastYtWall = 0;
+  playbackHeld = false;
   renderPitch();
   clearPitchMedia();
   hideLoading();
@@ -1031,17 +1044,18 @@ setInterval(() => {
 
   const ytTime = ytPlayer?.getCurrentTime?.();
   const hasTime = typeof ytTime === "number";
-  const moving = hasTime && Math.abs(ytTime - lastSyncYtTime) > 0.04;
   const state = ytPlayer?.getPlayerState?.();
   const ended = state === window.YT?.PlayerState?.ENDED;
-  const frozenPause =
-    hasTime &&
-    !moving &&
-    (state === window.YT?.PlayerState?.PAUSED || state === window.YT?.PlayerState?.CUED);
+  const paused =
+    state === window.YT?.PlayerState?.PAUSED || state === window.YT?.PlayerState?.CUED;
+  const muteEcho = IS_IOS && performance.now() - lastMuteAt < 700;
+  const playing = isYtPlaying();
 
-  if (ended || (frozenPause && !shiftLoading && audioReady)) {
+  if (ended || (paused && !muteEcho) || (playbackHeld && !playing)) {
+    playbackHeld = true;
     pausePreview();
-  } else if (audioReady && (shiftLoading || moving || isYtPlaying())) {
+  } else if (audioReady && playing) {
+    playbackHeld = false;
     getAudioCtx().resume().catch(() => {});
     resumePreview();
   }
@@ -1049,13 +1063,10 @@ setInterval(() => {
   if (!hasTime) return;
 
   const jumped = ytTimelineJumped(ytTime);
-  if (jumped && previewShifter) {
-    snapToOriginal();
-    if (moving || isYtPlaying()) resumePreview();
-  }
+  if (jumped && previewShifter) snapToOriginal();
   noteYtTime(ytTime);
   lastSyncYtTime = ytTime;
-  if (!jumped && audioReady && previewConnected && (moving || isYtPlaying())) {
+  if (!playbackHeld && !jumped && audioReady && previewConnected && playing) {
     syncAudioTime(false);
   }
 }, SYNC_MS);
