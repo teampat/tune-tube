@@ -29,6 +29,7 @@ const pitchDown = document.getElementById("pitch-down");
 const pitchReset = document.getElementById("pitch-reset");
 const semitoneReadout = document.getElementById("semitone-readout");
 const audioEl = document.getElementById("shifted-audio");
+const resumeHitEl = document.getElementById("player-resume-hit");
 
 let ytPlayer = null;
 let currentVideoId = null;
@@ -58,6 +59,7 @@ let playbackHeld = false;
 let pausedByBackground = false;
 let sawPauseAfterShow = false;
 let lastPitchAt = 0;
+let resumeHitHideTimer = 0;
 
 async function loadServerConfig() {
   try {
@@ -337,11 +339,54 @@ function claimIosAudioSession() {
 }
 
 function pitchStartGrace() {
-  return performance.now() - lastPitchAt < 1800 || performance.now() - lastMuteAt < 700;
+  return performance.now() - lastPitchAt < 2500 || performance.now() - lastMuteAt < 1000;
+}
+
+function markPitchLive() {
+  lastPitchAt = performance.now();
+  playbackHeld = false;
+  pausedByBackground = false;
+  sawPauseAfterShow = true;
 }
 
 function isPageHidden() {
   return document.hidden || document.visibilityState === "hidden";
+}
+
+function hideBackgroundResumeHit() {
+  clearTimeout(resumeHitHideTimer);
+  resumeHitHideTimer = 0;
+  resumeHitEl.hidden = true;
+}
+
+function showBackgroundResumeHit() {
+  if (currentPitch === 0 || !currentVideoId) {
+    hideBackgroundResumeHit();
+    return;
+  }
+  resumeHitEl.hidden = false;
+}
+
+function beginResumeAfterBackground() {
+  if (isPageHidden() || currentPitch === 0 || !currentVideoId) {
+    hideBackgroundResumeHit();
+    return;
+  }
+  pausedByBackground = false;
+  playbackHeld = false;
+  sawPauseAfterShow = true;
+  lastPitchAt = performance.now();
+  unlockAudio();
+  keepVideoSilent();
+  if (IS_IOS) armIosShifter();
+  try {
+    ytPlayer?.playVideo();
+  } catch {
+    // iframe may still be cueing
+  }
+  restorePitchOutput();
+  clearTimeout(resumeHitHideTimer);
+  resumeHitHideTimer = setTimeout(hideBackgroundResumeHit, 400);
 }
 
 function pauseForBackground() {
@@ -359,6 +404,7 @@ function pauseForBackground() {
   } catch {
     // ignore
   }
+  showBackgroundResumeHit();
 }
 
 function restorePitchOutput() {
@@ -399,6 +445,7 @@ function onPageShown() {
     state === window.YT?.PlayerState?.PAUSED ||
     state === window.YT?.PlayerState?.CUED ||
     state === window.YT?.PlayerState?.ENDED;
+  showBackgroundResumeHit();
 }
 
 function kickHtmlAudio() {
@@ -697,6 +744,7 @@ function setPitch(semitones) {
   if (!currentVideoId) return;
 
   if (currentPitch === 0) {
+    hideBackgroundResumeHit();
     restoreYoutubeAudio();
     return;
   }
@@ -705,16 +753,14 @@ function setPitch(semitones) {
   playbackHeld = false;
   pausedByBackground = false;
   sawPauseAfterShow = true;
+  hideBackgroundResumeHit();
 
-  keepVideoSilent();
   claimIosAudioSession();
   unlockAudio();
   if (IS_IOS) armIosShifter();
   if (previewShifter && audioReady && !iosDummyShifter) {
     previewShifter.pitchSemitones = currentPitch;
-    resumePreview();
-    getAudioCtx().resume().catch(() => {});
-    keepPlayingVideo();
+    playShiftedAudio();
     return;
   }
   if (startShiftedFromCache()) return;
@@ -749,6 +795,7 @@ function keepPlayingVideo() {
 }
 
 function playShiftedAudio() {
+  markPitchLive();
   keepVideoSilent();
   claimIosAudioSession();
   unlockAudio();
@@ -783,6 +830,7 @@ async function ensureShiftedPlayback() {
     if (job !== pitchJob || currentPitch !== wanted || currentPitch === 0) return;
     const buffer = await decodeOriginal(currentVideoId);
     if (job !== pitchJob || currentPitch !== wanted || currentPitch === 0) return;
+    markPitchLive();
     if (IS_IOS && previewShifter) attachDecodedBuffer(buffer, currentPitch);
     else startPreview(buffer, currentPitch, currentYtTime());
     playShiftedAudio();
@@ -815,6 +863,7 @@ function stopPlayback() {
   lastYtWall = 0;
   playbackHeld = false;
   pausedByBackground = false;
+  hideBackgroundResumeHit();
   hideLoading();
   clearPitchMedia();
   resetYtPlayer();
@@ -911,16 +960,32 @@ function onPlayerStateChange(event) {
   const state = event.data;
 
   if (state === YT.PlayerState.PLAYING) {
-    if (pausedByBackground && !sawPauseAfterShow) {
-      try {
-        ytPlayer?.pauseVideo();
-      } catch {
-        // keep held after fold
+    if (pausedByBackground) {
+      if (currentPitch !== 0) {
+        try {
+          ytPlayer?.pauseVideo();
+        } catch {
+          // keep held after fold until a tap on the player
+        }
+        holdPlayback();
+        showBackgroundResumeHit();
+        return;
       }
-      holdPlayback();
+      if (!sawPauseAfterShow) {
+        try {
+          ytPlayer?.pauseVideo();
+        } catch {
+          // swallow iframe autoplay once
+        }
+        holdPlayback();
+        sawPauseAfterShow = true;
+        return;
+      }
+      pausedByBackground = false;
+      playbackHeld = false;
       return;
     }
-    pausedByBackground = false;
+    hideBackgroundResumeHit();
     playbackHeld = false;
     if (currentPitch !== 0) {
       keepVideoSilent();
@@ -936,7 +1001,7 @@ function onPlayerStateChange(event) {
 
   if (state === YT.PlayerState.PAUSED && currentPitch !== 0) {
     if (pausedByBackground) sawPauseAfterShow = true;
-    if (pitchStartGrace()) return;
+    if (!audioReady || shiftLoading || pitchStartGrace()) return;
     holdPlayback();
   }
 }
@@ -982,6 +1047,7 @@ async function loadVideo(videoId) {
   lastYtWall = 0;
   playbackHeld = false;
   pausedByBackground = false;
+  hideBackgroundResumeHit();
   renderPitch();
   clearPitchMedia();
   hideLoading();
@@ -1070,11 +1136,23 @@ function onPitchPointerDown(event) {
   playbackHeld = false;
   pausedByBackground = false;
   sawPauseAfterShow = true;
-  keepVideoSilent();
+  hideBackgroundResumeHit();
   claimIosAudioSession();
   getAudioCtx().resume().catch(() => {});
   armIosShifter();
 }
+
+resumeHitEl.addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "mouse" && event.button !== 0) return;
+  event.preventDefault();
+  beginResumeAfterBackground();
+});
+resumeHitEl.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  beginResumeAfterBackground();
+  hideBackgroundResumeHit();
+});
 
 pitchUp.addEventListener("pointerdown", onPitchPointerDown);
 pitchDown.addEventListener("pointerdown", onPitchPointerDown);
@@ -1088,7 +1166,7 @@ setInterval(() => {
     pauseForBackground();
     return;
   }
-  if (currentPitch === 0 || !previewShifter) return;
+  if (currentPitch === 0 || !previewShifter || !audioReady) return;
 
   const ytTime = ytPlayer?.getCurrentTime?.();
   const hasTime = typeof ytTime === "number";
@@ -1101,13 +1179,6 @@ setInterval(() => {
 
   if (pausedByBackground && !pitchStartGrace()) {
     pausePreview();
-    if (playing && !sawPauseAfterShow) {
-      try {
-        ytPlayer?.pauseVideo();
-      } catch {
-        // wait for a real user play
-      }
-    }
   } else if (ended || (paused && !muteEcho) || (playbackHeld && !playing && !muteEcho)) {
     playbackHeld = true;
     pausePreview();
